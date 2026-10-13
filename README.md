@@ -98,17 +98,23 @@ LangGraph의 **Supervisor 패턴**으로 구성했습니다. Supervisor가 대�
 
 ```
 .
-├── finance_agent/
-│   ├── graph.py      # Supervisor 멀티 에이전트 그래프
-│   ├── prompts.py    # 에이전트별 시스템 프롬프트
-│   ├── tools.py      # 데이터 수집 · 재무 비율 계산 도구
-│   ├── dart.py       # OpenDART API 클라이언트
-│   └── rag.py        # 사업보고서 파싱 · 인덱싱 · 하이브리드 검색
-├── backend/
-│   └── app.py        # FastAPI (SSE 분석 API, 리포트 조회 API)
-├── frontend/         # Next.js 웹 UI
-├── main.py           # CLI 실행
-└── requirements.txt
+├── data/                  # 문서 풀 (DART 기업 코드 캐시, 사업보고서 Chroma 인덱스 — 실행 시 생성)
+├── agents/                # Agent 모듈
+│   ├── graph.py           # Supervisor 멀티 에이전트 그래프
+│   ├── tools.py           # 데이터 수집 · 재무 비율 계산 도구
+│   ├── dart.py            # OpenDART API 클라이언트
+│   └── rag.py             # 사업보고서 파싱 · 인덱싱 · 하이브리드 검색
+├── prompts/               # 프롬프트 템플릿
+│   ├── supervisor.md
+│   ├── researcher.md
+│   ├── analyst.md
+│   └── writer.md
+├── outputs/               # 실행 결과 저장 (report_YYYYMMDD_HHMMSS.md)
+├── app.py                 # 실행 스크립트 (CLI + FastAPI SSE API)
+├── frontend/              # Next.js 웹 UI
+├── docs/images/           # README 스크린샷
+├── requirements.txt
+└── README.md
 ```
 
 ## 실행 방법
@@ -128,7 +134,7 @@ OPENAI_MODEL=gpt-5-mini   # 선택
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn backend.app:app --reload --port 8000
+uvicorn app:app --reload --port 8000
 ```
 
 ### 3. 프론트엔드
@@ -143,8 +149,8 @@ npm run dev                  # http://localhost:3000
 ### CLI로 실행
 
 ```bash
-python main.py                         # 대화형 모드
-python main.py "셀트리온 재무 분석해줘"   # 단일 질문
+python app.py                         # 대화형 모드
+python app.py "셀트리온 재무 분석해줘"   # 단일 질문
 ```
 
 ## API
@@ -152,7 +158,7 @@ python main.py "셀트리온 재무 분석해줘"   # 단일 질문
 | Method | Path | 설명 |
 |---|---|---|
 | `POST` | `/api/analyze` | 질문을 받아 에이전트 진행 상황을 SSE로 스트리밍 |
-| `GET` | `/api/reports` | 저장된 리포트 목록 |
+| `GET` | `/api/reports` | 저장된 리포트 목록 (`outputs/`) |
 | `GET` | `/api/reports/{name}` | 리포트 본문 |
 | `GET` | `/api/health` | 헬스 체크 |
 

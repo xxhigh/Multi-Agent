@@ -23,7 +23,8 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from .prompts import ANALYST_PROMPT, RESEARCHER_PROMPT, SUPERVISOR_PROMPT, WRITER_PROMPT
+from prompts import ANALYST_PROMPT, RESEARCHER_PROMPT, SUPERVISOR_PROMPT, WRITER_PROMPT
+
 from .tools import ANALYST_TOOLS, FINANCIAL_TABLE_MARK, RESEARCH_TOOLS
 
 WORKERS = ("researcher", "analyst", "writer")

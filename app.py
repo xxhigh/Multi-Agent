@@ -1,17 +1,24 @@
-"""재무 분석 agent HTTP API.
+"""재무 분석 멀티 agent 실행 스크립트 (CLI + HTTP API).
 
-실행 (프로젝트 루트에서):
-    uvicorn backend.app:app --reload --port 8000
+CLI (프로젝트 루트에서):
+    python app.py                         # 대화형 모드
+    python app.py "셀트리온 재무 분석해줘"   # 단일 질문
+
+HTTP API:
+    uvicorn app:app --reload --port 8000
 
 - POST /api/analyze        : 질문을 받아 agent 진행 상황을 SSE로 스트리밍
 - GET  /api/reports        : 저장된 리포트 목록
 - GET  /api/reports/{name} : 리포트 본문
+
+리포트는 outputs/ 에 저장된다.
 """
 
 import json
 import logging
 import os
 import re
+import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -25,9 +32,9 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import StreamingResponse  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
-from finance_agent import build_graph  # noqa: E402
+from agents import build_graph  # noqa: E402
 
-REPORT_DIR = Path(__file__).resolve().parent.parent / "reports"
+OUTPUT_DIR = Path(__file__).resolve().parent / "outputs"
 REPORT_NAME = re.compile(r"^report_\d{8}_\d{6}\.md$")
 TOOL_RESULT_PREVIEW = 300
 
@@ -54,11 +61,11 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _save_report(report: str) -> str:
-    REPORT_DIR.mkdir(exist_ok=True)
-    path = REPORT_DIR / f"report_{datetime.now():%Y%m%d_%H%M%S}.md"
+def _save_report(report: str) -> Path:
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    path = OUTPUT_DIR / f"report_{datetime.now():%Y%m%d_%H%M%S}.md"
     path.write_text(report, encoding="utf-8")
-    return path.name
+    return path
 
 
 def _events(question: str, thread_id: str):
@@ -93,7 +100,7 @@ def _events(question: str, thread_id: str):
                     yield _sse("worker_done", {"agent": node, "chars": len(content),
                                                "summary": content if node != "writer" else ""})
                     if node == "writer":
-                        yield _sse("report", {"content": content, "name": _save_report(content)})
+                        yield _sse("report", {"content": content, "name": _save_report(content).name})
     except Exception as e:  # noqa: BLE001 - 스트림 도중 오류를 클라이언트에 전달
         log.exception("analyze 실패 (thread_id=%s)", thread_id)
         yield _sse("error", {"message": f"{type(e).__name__}: {e}"})
@@ -119,10 +126,10 @@ def _title(text: str) -> str:
 
 @app.get("/api/reports")
 def list_reports() -> list[dict]:
-    if not REPORT_DIR.exists():
+    if not OUTPUT_DIR.exists():
         return []
     items = []
-    for path in sorted(REPORT_DIR.glob("report_*.md"), reverse=True):
+    for path in sorted(OUTPUT_DIR.glob("report_*.md"), reverse=True):
         created = datetime.strptime(path.stem, "report_%Y%m%d_%H%M%S")
         items.append({"name": path.name, "title": _title(path.read_text(encoding="utf-8")),
                       "created_at": created.isoformat()})
@@ -131,7 +138,7 @@ def list_reports() -> list[dict]:
 
 @app.get("/api/reports/{name}")
 def get_report(name: str) -> dict:
-    path = REPORT_DIR / name
+    path = OUTPUT_DIR / name
     if not REPORT_NAME.match(name) or not path.exists():
         raise HTTPException(404, "리포트를 찾을 수 없습니다.")
     return {"name": name, "content": path.read_text(encoding="utf-8")}
@@ -140,3 +147,55 @@ def get_report(name: str) -> dict:
 @app.get("/api/health")
 def health() -> dict:
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def run(question: str, thread_id: str) -> None:
+    config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
+    report = None
+    stream = graph.stream({"messages": [("user", question)]}, config, stream_mode="updates", subgraphs=True)
+    for namespace, update in stream:
+        for node, data in update.items():
+            if namespace:  # researcher/analyst 내부의 도구 호출 표시
+                if node == "agent" and data and data["messages"][-1].tool_calls:
+                    for call in data["messages"][-1].tool_calls:
+                        args = ", ".join(f"{k}={v}" for k, v in call["args"].items())
+                        print(f"      🔧 {call['name']}({args})")
+            elif node == "supervisor":
+                nxt = data.get("next")
+                print(f"  🧭 supervisor → {nxt}")
+            elif data and data.get("messages"):
+                msg = data["messages"][-1]
+                print(f"  ✅ {node} 완료 ({len(msg.content)}자)")
+                if node == "writer":
+                    report = msg.content
+
+    if report:
+        print("\n" + "=" * 70 + "\n" + report + "\n" + "=" * 70)
+        print(f"\n📄 리포트 저장: {_save_report(report)}")
+
+
+def main() -> None:
+    thread_id = str(uuid.uuid4())
+
+    if len(sys.argv) > 1:
+        run(" ".join(sys.argv[1:]), thread_id)
+        return
+
+    print("💰 재무 분석 agent (종료: exit)")
+    while True:
+        try:
+            q = input("\n질문> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if q.lower() in {"exit", "quit", "q"}:
+            break
+        if q:
+            run(q, thread_id)
+
+
+if __name__ == "__main__":
+    main()

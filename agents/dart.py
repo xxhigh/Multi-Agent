@@ -1,6 +1,6 @@
 """OpenDART API 클라이언트.
 
-- 기업 고유번호(corp_code) 목록은 최초 1회 내려받아 .cache/ 에 저장한다.
+- 기업 고유번호(corp_code) 목록은 최초 1회 내려받아 data/ 에 저장한다.
 - 재무제표는 연결(CFS)을 우선 조회하고, 없으면 별도(OFS)로 대체한다.
 """
 
@@ -19,8 +19,8 @@ from functools import lru_cache
 from pathlib import Path
 
 BASE_URL = "https://opendart.fss.or.kr/api"
-CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache"
-CORP_CACHE = CACHE_DIR / "corp_codes.json"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+CORP_CACHE = DATA_DIR / "corp_codes.json"
 CORP_CACHE_TTL = 7 * 24 * 3600
 
 # 자주 쓰는 약칭 → DART 정식 회사명
@@ -87,7 +87,7 @@ def _listed_corps() -> list[Corp]:
             for e in root.iter("list")
         ]
         rows = [r for r in rows if r["stock_code"]]
-        CACHE_DIR.mkdir(exist_ok=True)
+        DATA_DIR.mkdir(exist_ok=True)
         CORP_CACHE.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
     return [Corp(**r) for r in rows]
 

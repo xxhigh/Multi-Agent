@@ -20,7 +20,7 @@ from langchain_openai import OpenAIEmbeddings
 
 from . import dart
 
-CHROMA_DIR = dart.CACHE_DIR / "chroma"
+CHROMA_DIR = dart.DATA_DIR / "chroma"
 EMBED_MODEL = "text-embedding-3-small"
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
