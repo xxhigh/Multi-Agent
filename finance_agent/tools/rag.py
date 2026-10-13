@@ -29,12 +29,24 @@ TOP_SECTIONS = ("II.", "IV.", "XI.")
 NOTE_SECTIONS = ("영업부문 (연결)", "우발채무 및 약정사항 (연결)")
 
 _index_lock = threading.Lock()
+_client_lock = threading.Lock()
+_client_instance: chromadb.ClientAPI | None = None
 
 
-@lru_cache(maxsize=1)
 def _client() -> chromadb.ClientAPI:
-    CHROMA_DIR.mkdir(parents=True, exist_ok=True)
-    return chromadb.PersistentClient(path=str(CHROMA_DIR))
+    """Chroma 클라이언트는 프로세스당 하나만 만든다.
+
+    ToolNode는 한 턴의 도구 호출을 여러 스레드에서 동시에 실행한다. 첫 호출 때 여러 스레드가
+    동시에 PersistentClient를 만들면 'Could not connect to tenant default_tenant' 같은 초기화
+    경합 오류가 나므로, 생성 구간을 잠금으로 보호한다.
+    """
+    global _client_instance
+    if _client_instance is None:
+        with _client_lock:
+            if _client_instance is None:
+                CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+                _client_instance = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    return _client_instance
 
 
 @lru_cache(maxsize=1)
