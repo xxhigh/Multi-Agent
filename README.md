@@ -38,6 +38,7 @@ DART 공시·재무제표·사업보고서(RAG)와 Yahoo Finance 시세를 근�
 - Embedding : OpenAI `text-embedding-3-small`
 - Data : OpenDART API (재무제표·기업개황·공시·사업보고서 원문), yfinance (주가·시가총액)
 - Tracing : LangSmith (`metadata.trace_id`로 로컬 결정 로그와 연결)
+- Report Export : markdown → PDF (PyMuPDF, 한글 글꼴 내장)
 - Backend / Frontend : FastAPI + SSE / Next.js (선택 사항)
 
 ## Agents
@@ -122,7 +123,8 @@ python main.py "셀트리온 재무 분석해줘"
 
 | 파일 | 내용 |
 |---|---|
-| `outputs/reports/report_{trace_id}.md` | 최종 보고서 |
+| `outputs/reports/report_{trace_id}.md` | 최종 보고서 (마크다운) |
+| `outputs/reports/report_{trace_id}.pdf` | 최종 보고서 (제출용 PDF, A4·쪽번호) |
 | `outputs/runs/{trace_id}/decisions.jsonl` | supervisor 라우팅·재작업·평가 결정과 사유 |
 | `outputs/runs/{trace_id}/run-summary.json` | 라우팅 순서, 재작업 횟수, 수정 횟수, 최종 상태 |
 | `outputs/runs/{trace_id}/evidence/E*.md` | 근거 원문 |

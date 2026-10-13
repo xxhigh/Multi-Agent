@@ -70,7 +70,7 @@ def run(question="삼성전자 재무 분석해줘"):
     graph = build_graph()
     trace_id, state, cfg = new_run(question)
     final = graph.invoke(state, cfg)
-    save_outputs(trace_id, final)
+    final["_paths"] = save_outputs(trace_id, final)
     return trace_id, final
 
 
@@ -111,6 +111,13 @@ def test_dynamic_rework_and_revision_loop(harness):
     assert all(p.sufficient for p in final["perspectives"].values())
     # 원문은 파일, State에는 참조만
     assert all(e.path.endswith(".md") for e in final["evidence"])
+    # 제출용 PDF도 함께 생성되고 한글 본문이 들어 있다
+    import pymupdf
+    pdf = final["_paths"]["pdf"]
+    assert pdf.suffix == ".pdf" and pdf.exists()
+    with pymupdf.open(str(pdf)) as doc:
+        text = "".join(page.get_text() for page in doc)
+    assert "사업·기술 경쟁력" in text and "REFERENCE" in text
 
 
 def test_termination_when_evidence_never_sufficient(harness):

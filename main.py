@@ -6,6 +6,7 @@
 
 산출물:
     outputs/reports/report_{trace_id}.md          최종 보고서
+    outputs/reports/report_{trace_id}.pdf         최종 보고서 (제출용 PDF)
     outputs/runs/{trace_id}/decisions.jsonl       supervisor 라우팅·평가 결정과 사유
     outputs/runs/{trace_id}/evidence/E*.md        근거 원문
     outputs/runs/{trace_id}/run-summary.json      라우팅 순서·재작업·수정 횟수 요약

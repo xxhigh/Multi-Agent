@@ -1,9 +1,12 @@
 """실행 공통 부분 (CLI·API가 함께 쓴다): 초기 State, config, 산출물 저장."""
 
+import logging
 from pathlib import Path
 
 from . import config
 from .observability import new_trace_id, run_dir, write_summary
+
+log = logging.getLogger(__name__)
 
 
 def initial_state(question: str, trace_id: str) -> dict:
@@ -46,7 +49,7 @@ def new_run(question: str, thread_id: str | None = None) -> tuple[str, dict, dic
 
 
 def save_outputs(trace_id: str, state: dict) -> dict[str, Path]:
-    """보고서(.md)와 실행 요약(run-summary.json)을 저장."""
+    """보고서(.md + 제출용 .pdf)와 실행 요약(run-summary.json)을 저장."""
     out = {"summary": write_summary(trace_id, state)}
     report = state.get("report")
     if report and state.get("status") != "out_of_scope":
@@ -55,4 +58,9 @@ def save_outputs(trace_id: str, state: dict) -> dict[str, Path]:
         path.write_text(report, encoding="utf-8")
         (run_dir(trace_id) / "report.md").write_text(report, encoding="utf-8")
         out["report"] = path
+        try:
+            from .pdf_export import markdown_to_pdf
+            out["pdf"] = markdown_to_pdf(report, path.with_suffix(".pdf"))
+        except Exception as e:  # noqa: BLE001 - PDF 변환 실패가 보고서 저장을 막지 않게 한다
+            log.warning("PDF 변환 실패 (trace_id=%s): %s", trace_id, e)
     return out

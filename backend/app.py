@@ -6,6 +6,7 @@
 - POST /api/analyze        : 질문을 받아 agent 진행 상황을 SSE로 스트리밍
 - GET  /api/reports        : 저장된 리포트 목록
 - GET  /api/reports/{name} : 리포트 본문
+- GET  /api/reports/{name}/pdf : 리포트 PDF 다운로드
 """
 
 import json
@@ -21,7 +22,7 @@ load_dotenv()
 
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import StreamingResponse  # noqa: E402
+from fastapi.responses import FileResponse, StreamingResponse  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 from finance_agent import build_graph, config  # noqa: E402
@@ -137,6 +138,14 @@ def get_report(name: str) -> dict:
     if not REPORT_NAME.match(name) or not path.exists():
         raise HTTPException(404, "리포트를 찾을 수 없습니다.")
     return {"name": name, "content": path.read_text(encoding="utf-8")}
+
+
+@app.get("/api/reports/{name}/pdf")
+def get_report_pdf(name: str) -> FileResponse:
+    path = (config.REPORT_DIR / name).with_suffix(".pdf")
+    if not REPORT_NAME.match(name) or not path.exists():
+        raise HTTPException(404, "PDF를 찾을 수 없습니다.")
+    return FileResponse(path, media_type="application/pdf", filename=path.name)
 
 
 @app.get("/api/health")
