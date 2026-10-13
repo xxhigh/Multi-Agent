@@ -179,5 +179,5 @@ python app.py "Figure AI 투자 가능성 평가해줘"   # 단일 질문
 - 김근홍 : Agent Design, Supervisor Routing, State Schema
 - 한유진 : Prompt Engineering, 투자 평가 항목 · 스코어카드 설계
 - 허지원 : PDF Parsing, Embedding, Retrieval (문서 풀 RAG), Agent Design
-- 심혁 : Web Search · DART 도구, Research Agent
+- 심혁 : - 심혁 : DART 공시·재무 데이터 도구, Web Search 도구, Research Agent 설계·구현
 - 정순욱 : 보고서 형식, 품질 평가, PDF 출력, 문서화
