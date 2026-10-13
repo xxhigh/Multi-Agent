@@ -4,7 +4,7 @@
     python app.py                                  # 대화형 모드
     python app.py "Figure AI 투자 가능성 평가해줘"   # 단일 질문
 
-보고서는 outputs/ 에, 실행 트레이스(결정·사유·작업 결과)는 outputs/traces/<run_id>.jsonl 에 저장된다.
+보고서는 outputs/ 에 PDF(와 원본 Markdown)로, 실행 트레이스(결정·사유·작업 결과)는 outputs/traces/<run_id>.jsonl 에 저장된다.
 """
 
 import sys
@@ -16,16 +16,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from agents import build_graph, trace  # noqa: E402
+from agents import build_graph, pdf, trace  # noqa: E402
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "outputs"
 
 
 def _save_report(report: str) -> Path:
+    """보고서를 PDF로 저장하고 PDF 경로를 돌려준다. 원본 Markdown도 같은 이름으로 함께 남긴다."""
     OUTPUT_DIR.mkdir(exist_ok=True)
-    path = OUTPUT_DIR / f"report_{datetime.now():%Y%m%d_%H%M%S}.md"
-    path.write_text(report, encoding="utf-8")
-    return path
+    path = OUTPUT_DIR / f"report_{datetime.now():%Y%m%d_%H%M%S}.pdf"
+    path.with_suffix(".md").write_text(report, encoding="utf-8")
+    return pdf.to_pdf(report, path)
 
 
 def run(graph, question: str | None, thread_id: str) -> bool:
@@ -55,6 +56,14 @@ def run(graph, question: str | None, thread_id: str) -> bool:
                         print(f"  🧭 [{decision['step']}] supervisor → {agents}{missing}\n       사유: {decision['reason']}")
                     else:
                         print(f"  🏁 supervisor → 종료 ({status})")
+                elif node == "quality":
+                    q = data["quality"]
+                    marks = {True: "✅", False: "❌", None: "–"}
+                    summary = " / ".join(f"{item} {marks[ok]}" for item, ok in q["items"].items())
+                    rewrite = f" → 다시 작성 ({data['quality_rounds']}회차)" if "quality_rounds" in data else ""
+                    print(f"  🔍 품질 평가: {summary}{rewrite}")
+                    for issue in q["issues"]:
+                        print(f"       {issue[:200]}")
                 elif data.get("errors"):
                     for e in data["errors"]:
                         print(f"  ⚠️  {node} 실패 (시도 {e['attempt']}): {e['error']}")
@@ -67,12 +76,16 @@ def run(graph, question: str | None, thread_id: str) -> bool:
         print(f"\n❌ 실행 중단: {type(e).__name__}: {e}")
         return False
 
-    run_id = graph.get_state(config).values["run_id"]
+    values = graph.get_state(config).values
+    run_id = values["run_id"]
+    report = values.get("report") or report  # 품질 평가에서 REFERENCE 를 정리한 최종본
+    if report and values.get("quality") and not values["quality"]["passed"]:
+        print("\n⚠️  품질 평가에 미달한 항목이 남아 있습니다 (다시 쓰기 한도 도달).")
     if report:
         print("\n" + "=" * 70 + "\n" + report + "\n" + "=" * 70)
         path = _save_report(report)
         trace.log(run_id, "report_saved", path=str(path))
-        print(f"\n📄 보고서 저장: {path}")
+        print(f"\n📄 보고서 저장(PDF): {path}")
     elif status == "failed":
         print("\n❌ 보고서를 작성하지 못했습니다.")
     print(f"🔎 트레이스: {trace.path(run_id)}")

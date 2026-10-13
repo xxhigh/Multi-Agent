@@ -2,7 +2,7 @@
 
                               ┌─Send─▶ company_researcher ─┐
  START → init → supervisor ───┼─Send─▶ tech_researcher ────┼─▶ supervisor → evaluator → supervisor
-                              └─Send─▶ market_researcher ──┘        → writer → supervisor → END
+                              └─Send─▶ market_researcher ──┘        → writer ⇄ quality → supervisor → END
 
 - init       : 질문마다 제어 메타(run_id, step, rounds …)와 누적 필드를 초기화
 - supervisor : 매 턴 증거가 충분한지 판단하고 다음 작업을 결정. 서로 독립인 작업은 Send로 동시에 내보낸다.
@@ -11,7 +11,8 @@
 - tech_researcher    : 기술 근거 수집 — 문서 풀 RAG, 웹 검색 (도구 사용)
 - market_researcher  : 시장·경쟁 근거 수집 — 문서 풀 RAG, 웹 검색 (도구 사용)
 - evaluator  : 평가 항목별 점수와 근거, 스코어카드 산출 (도구 사용)
-- writer     : 조사·평가 결과를 투자 검토 보고서로 작성 (증거가 충분하거나 조사 한도에 도달했을 때만)
+- writer     : 조사·평가 결과를 투자 보고서로 작성 (증거가 충분하거나 조사 한도에 도달했을 때만)
+- quality    : 보고서 품질 평가 (Groundedness · 중립성 · 편향 통제 · 관점 커버리지). 미달이면 writer로 되돌린다
 
 State 스키마와 설계 원칙은 state.py, 평가 항목은 criteria.py 참고.
 """
@@ -40,7 +41,7 @@ from prompts import (
     WRITER_PROMPT,
 )
 
-from . import criteria, report, trace
+from . import criteria, quality, report, trace
 from .state import Decision, ErrorRecord, EvaluationState, Finding, Task, WorkerInput
 from .tools import COMPANY_TOOLS, EVALUATOR_TOOLS, MARKET_TOOLS, TECH_TOOLS, VERBATIM_MARK
 
@@ -59,6 +60,7 @@ MAX_STEPS = 10  # 질문 하나에 supervisor가 내릴 수 있는 결정 수. �
 MAX_RESEARCH_ROUNDS = 5  # 질문 하나에 researcher에게 맡길 수 있는 작업 수 (기본 3건 + 재조사 2건)
 MAX_PARALLEL = 3  # 한 번에 동시에 내보내는 작업 수
 MAX_ATTEMPTS = 2  # 같은 작업의 시도 횟수 (최초 1회 + 재시도 1회)
+MAX_QUALITY_ROUNDS = 2  # 품질 평가 미달로 보고서를 다시 쓰게 하는 횟수
 MAX_HISTORY_MESSAGES = 7  # 대화에 남기는 메시지 수 (이전 질문·보고서 3쌍 + 이번 질문)
 
 
@@ -149,6 +151,7 @@ def _init_node(state: EvaluationState, config: RunnableConfig) -> dict:
     trace.log(run_id, "run_start", thread_id=config["configurable"].get("thread_id"), question=messages[-1].content)
     return {
         "run_id": run_id, "status": "running", "step": 0, "rounds": 0, "decision": None,
+        "quality": None, "quality_rounds": 0,
         "findings": None, "errors": None, "report": "",  # 이전 질문의 결과는 비운다 (보고서는 messages에 남아 있다)
         "messages": [RemoveMessage(id=m.id) for m in messages[:-MAX_HISTORY_MESSAGES]],
     }
@@ -169,19 +172,21 @@ def _worker_node(name: str, agent):
         except Exception as e:  # noqa: BLE001 - LLM·네트워크 오류 등
             return _failure(state, e)
         content = result["messages"][-1].content
-        tables = [m.content for m in result["messages"][len(state["messages"]):]
-                  if isinstance(m, ToolMessage) and VERBATIM_MARK in str(m.content)]
+        tool_results = [str(m.content) for m in result["messages"][len(state["messages"]):] if isinstance(m, ToolMessage)]
+        tables = [t for t in tool_results if VERBATIM_MARK in t]
         if tables:
             content += "\n\n" + "\n\n".join(tables)
         trace.log(state["run_id"], "worker_done", step=state["step"], agent=name, attempt=task["attempt"],
                   instruction=task["instruction"], content=content)
-        return {"findings": [Finding(agent=name, instruction=task["instruction"], content=content, step=state["step"])]}
+        sources = sorted({u for t in tool_results for u in quality.urls(t)})
+        return {"findings": [Finding(agent=name, instruction=task["instruction"], content=content, step=state["step"],
+                                     sources=sources)]}
 
     return node
 
 
-def _writer_node(state: WorkerInput) -> dict:
-    """보고서를 작성한다. 형식(SUMMARY·목차·REFERENCE 표기)을 검사해 어긋나면 한 번 고쳐 쓰게 한다."""
+def _writer_node(state: WorkerInput) -> Command[Literal["quality", "supervisor"]]:
+    """보고서를 작성해 품질 평가로 넘긴다. 형식(SUMMARY·목차·REFERENCE 표기)을 검사해 어긋나면 한 번 고쳐 쓰게 한다."""
     try:
         llm = _llm()
         msgs = [SystemMessage(_render(WRITER_PROMPT))] + state["messages"]
@@ -202,10 +207,39 @@ def _writer_node(state: WorkerInput) -> dict:
         if not text.strip():
             raise ValueError("빈 보고서")
     except Exception as e:  # noqa: BLE001 - LLM·네트워크 오류 등
-        return _failure(state, e)
+        return Command(goto="supervisor", update=_failure(state, e))
     trace.log(state["run_id"], "worker_done", step=state["step"], agent="writer", attempt=state["task"]["attempt"],
               instruction=state["task"]["instruction"], content=text)
-    return {"report": text, "messages": [AIMessage(content=text, name="writer")]}
+    return Command(goto="quality", update={"report": text})
+
+
+def _quality_node(state: EvaluationState) -> Command[Literal["writer", "supervisor"]]:
+    """보고서 품질을 항목별 부합 여부로 판정한다. 미달이면 사유를 붙여 writer에게 다시 쓰게 한다 (횟수 제한)."""
+    findings = state["findings"]
+    full = any(VERBATIM_MARK in f["content"] and "스코어카드" in f["content"] for f in findings)
+    retrieved = {u for f in findings for u in f.get("sources", [])} | set(report.pool_references())
+    # REFERENCE 를 본문 인용에 맞춰 정리한 뒤 판정한다 (기계적으로 맞출 수 있는 것은 다시 쓰게 하지 않는다)
+    text = quality.tidy(state["report"], "\n".join(f["content"] for f in findings), retrieved)
+    result = quality.evaluate(text, full, retrieved)
+    rounds = state["quality_rounds"]
+    retry = not result["passed"] and rounds < MAX_QUALITY_ROUNDS
+    trace.log(state["run_id"], "quality", step=state["step"], round=rounds, rewrite=retry, **result)
+    if not retry:
+        return Command(goto="supervisor", update={"quality": result, "report": text})
+
+    task = next((t for t in state["decision"]["tasks"] if t["agent"] == "writer"),
+                Task(agent="writer", instruction="보고서를 작성하세요.", attempt=1))
+    feedback = ("보고서가 품질 평가에서 다음 항목에 미달했습니다. 대화에 있는 조사 결과만 사용해 아래 사항을 고친 보고서 전체를 "
+                "다시 출력하세요. 지적되지 않은 부분과 수치·표는 그대로 둡니다.\n- " + "\n- ".join(result["issues"]))
+    messages = _context(state["messages"], findings) + [
+        HumanMessage(content=f"[writer에게 지시] {task['instruction']}", name="supervisor"),
+        AIMessage(content=text),
+        HumanMessage(content=feedback),
+    ]
+    return Command(
+        goto=[Send("writer", WorkerInput(messages=messages, task=task, step=state["step"], run_id=state["run_id"]))],
+        update={"quality": result, "quality_rounds": rounds + 1, "report": text},
+    )
 
 
 def _plan(decision: Route, state: EvaluationState, findings: list[Finding]) -> tuple[list[Task], list[str], str]:
@@ -285,13 +319,16 @@ def _dispatch(state: EvaluationState, findings: list[Finding], tasks: list[Task]
 
 def _finish(state: EvaluationState, status: str) -> Command:
     trace.log(state["run_id"], "run_end", step=state["step"], status=status)
-    return Command(goto=END, update={"status": status})
+    update = {"status": status}
+    if status == "done":  # 확정된 보고서만 대화에 남긴다 (다시 쓰는 동안의 초안은 남기지 않는다)
+        update["messages"] = [AIMessage(content=state["report"], name="writer")]
+    return Command(goto=END, update=update)
 
 
 def _supervisor_node(
     state: EvaluationState,
 ) -> Command[Literal["company_researcher", "tech_researcher", "market_researcher", "evaluator", "writer", "__end__"]]:
-    if state["report"]:  # 보고서가 나왔으면 종료
+    if state["report"]:  # 품질 평가까지 마친 보고서가 있으면 종료
         return _finish(state, "done")
 
     # 직전 결정에서 실패한 작업: 시도 횟수가 남았으면 그대로 다시 맡기고, 아니면 실패로 확정한다
@@ -301,7 +338,7 @@ def _supervisor_node(
     gave_up = [e for e in failed if e["attempt"] >= MAX_ATTEMPTS]
     if any(e["agent"] == "writer" for e in gave_up):
         return _finish(state, "failed")
-    notes = [Finding(agent=e["agent"], instruction=e["instruction"], step=e["step"],
+    notes = [Finding(agent=e["agent"], instruction=e["instruction"], step=e["step"], sources=[],
                      content=f"오류로 이 작업을 완료하지 못했습니다 ({e['error']}). 같은 작업을 다시 요청하지 마세요.")
              for e in gave_up]
     findings = state["findings"] + notes
@@ -322,9 +359,10 @@ def build_graph(checkpointer=None):
     g.add_node("supervisor", _supervisor_node)
     for name, (prompt, tools) in WORKERS.items():
         g.add_node(name, _worker_node(name, _make_tool_agent(prompt, tools)))
-    g.add_node("writer", _writer_node)
+    g.add_node("writer", _writer_node)  # 성공하면 quality, 실패하면 supervisor로 간다
+    g.add_node("quality", _quality_node)
     g.add_edge(START, "init")
     g.add_edge("init", "supervisor")
-    for worker in (*WORKERS, "writer"):
+    for worker in WORKERS:
         g.add_edge(worker, "supervisor")
     return g.compile(checkpointer=checkpointer or InMemorySaver())

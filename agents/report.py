@@ -30,14 +30,16 @@ REFERENCE_FORMATS = {
 }
 
 
-def pool_references() -> dict[str, str]:
-    """문서 풀 보고서의 {URL: REFERENCE 항목}. 서지 정보는 data/docs/metadata.json 에 있다."""
+def pool_docs() -> list[dict]:
+    """문서 풀 보고서의 서지 정보 (data/docs/metadata.json)."""
     path = DATA_DIR / "docs" / "metadata.json"
-    if not path.exists():
-        return {}
-    docs = json.loads(path.read_text(encoding="utf-8")).values()
+    return list(json.loads(path.read_text(encoding="utf-8")).values()) if path.exists() else []
+
+
+def pool_references() -> dict[str, str]:
+    """문서 풀 보고서의 {URL: REFERENCE 항목}."""
     return {d["url"]: f"- {d['source']}({d['date'][:4]}). *{d['title']}*. {d['url']}"
-            for d in docs if d.get("url") and d.get("source") and d.get("title") and d.get("date")}
+            for d in pool_docs() if d.get("url") and d.get("source") and d.get("title") and d.get("date")}
 
 
 def normalize_references(report: str) -> str:

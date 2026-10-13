@@ -1,4 +1,4 @@
-from . import trace
+from . import pdf, trace
 from .graph import build_graph
 
-__all__ = ["build_graph", "trace"]
+__all__ = ["build_graph", "pdf", "trace"]

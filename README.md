@@ -16,7 +16,7 @@ LangGraph의 **Supervisor 패턴**으로 구성했습니다. Supervisor가 매 �
 ```
                               ┌─Send─▶ company_researcher ─┐
  START → init → supervisor ───┼─Send─▶ tech_researcher ────┼─▶ supervisor → evaluator → supervisor
-                              └─Send─▶ market_researcher ──┘        → writer → supervisor → END
+                              └─Send─▶ market_researcher ──┘        → writer ⇄ quality → supervisor → END
 ```
 
 | 에이전트 | 역할 | 사용 도구 |
@@ -27,6 +27,7 @@ LangGraph의 **Supervisor 패턴**으로 구성했습니다. Supervisor가 매 �
 | **Market Researcher** | 시장·경쟁 근거 수집: 시장 규모·성장 전망·정책, 경쟁사와 포지션 | `search_documents`, `web_search` |
 | **Evaluator** | 평가 항목별 점수와 근거, 스코어카드(종합 점수·투자 의견) 산출 | `score_investment`, `calculate_financial_ratios`, `calculator` |
 | **Writer** | 조사·평가 결과만으로 정해진 형식(SUMMARY ~ REFERENCE)의 한국어 Markdown 투자 보고서 작성 | - |
+| **Quality** | 보고서 품질 평가(LLM 없이 코드로 판정). 미달이면 사유를 붙여 Writer에게 다시 쓰게 함 | - |
 
 ### 평가 항목
 
@@ -47,16 +48,16 @@ LangGraph의 **Supervisor 패턴**으로 구성했습니다. Supervisor가 매 �
 
 ### 투자 보고서 형식
 
-보고서는 **SUMMARY**로 시작해 **REFERENCE**로 끝납니다. 장 제목과 순서는 고정입니다.
+보고서는 **PDF**로 제공되며, **SUMMARY**로 시작해 **REFERENCE**로 끝납니다. 장 제목과 순서는 고정입니다.
 
 ```
 # <기업명> 투자 보고서
 ## SUMMARY                   # 투자 의견·종합 점수·핵심 근거·최대 리스크 (반 페이지 이내)
 ## 1. 사업 아이디어            # 핵심 컨셉, 제품과 사업 모델
 ## 2. 팀 구성                 # 핵심 창업자, 기술 역량
-## 3. 기술 분석
-## 4. 시장 규모 및 경쟁 구도
-## 5. 사업화 및 재무
+## 3. 기술 분석               # ### 핵심 기술 / ### 기술 성숙도
+## 4. 시장 규모 및 경쟁 구도     # ### 시장성 / ### 경쟁 구도
+## 5. 사업화 및 재무            # ### 도메인 적용 / ### 이해관계자 / ### 재무
 ## 6. 투자 평가               # 스코어카드
 ## 7. 사업 리스크              # 시장 / 기술 / 규제 / 경쟁 / 기타
 ## 8. 한계점
@@ -72,6 +73,26 @@ REFERENCE는 자료 종류별 소제목 아래에 다음 형식으로 적습니�
 | 웹페이지 | 기관명 또는 작성자(YYYY-MM-DD). *제목*. 사이트명, URL |
 
 형식은 프롬프트로만 맡기지 않고 `agents/report.py`가 검사합니다. 목차, SUMMARY 분량, 리스크 소제목, REFERENCE 항목의 표기 형식을 확인해 어긋나면 위반 사항을 알려 주고 Writer가 한 번 고쳐 쓰게 합니다. 게시일을 알 수 없는 웹페이지는 날짜 자리에 `n.d.`를 씁니다. 단순 사실 질문에는 목차 없이 짧게 답하고 REFERENCE만 붙입니다.
+
+최종 보고서는 `agents/pdf.py`가 A4 PDF로 만듭니다 (Markdown → HTML → PDF, PyMuPDF). 한글은 PyMuPDF에 들어 있는 CJK 글꼴로 그리므로 글꼴을 따로 설치하지 않아도 됩니다. 원본 Markdown도 같은 이름으로 함께 저장됩니다.
+
+### 보고서 품질 평가
+
+보고서가 만들어지면 반드시 품질 평가 노드(`agents/quality.py`)를 거칩니다. 네 항목을 **부합 여부**로만 판정하며, 내용이 옳은지가 아니라 형식으로 확인할 수 있는 것만 봅니다. LLM을 쓰지 않으므로 같은 보고서에는 항상 같은 결과가 나옵니다.
+
+| 평가 항목 | 목적 | 판정 기준 (모두 만족해야 부합) |
+|---|---|---|
+| Groundedness | 주장이 검색된 출처로 추적되는가 | 본문 인용 `(기관명, 연도)`가 모두 REFERENCE 항목에 대응 · REFERENCE 항목이 모두 본문에 인용됨 · REFERENCE 항목이 모두 표기 형식에 맞고 URL이 도구가 실제로 돌려준 것 · 내부 에이전트·도구 이름을 출처로 쓰지 않음 · 사실 서술 줄의 70% 이상에 인용 |
+| 중립성 | 특정 기술 추천·우열 판정이 없는가 | "최고", "가장 우수", "독보적", "압도적", "우월", "추천" 등 우열 판정·추천 표현이 본문에 없음 (원본 그대로 옮긴 표 제외) |
+| 편향 통제 | 단일 출처, 유리한 근거 편중이 없는가 | 서로 다른 출처 5개 이상 · 한 출처가 본문 인용의 40% 이하 · 리스크 장에 출처가 달린 근거 2건 이상 · 한계점 장이 비어 있지 않음 |
+| 관점 커버리지 | 4개 관점을 포괄하는가 | `### 기술 성숙도`, `### 시장성`, `### 이해관계자`, `### 도메인 적용` 절이 모두 있고 각각 80자 이상 |
+
+- **Loop**: 한 항목이라도 미달이면 미달 사유를 붙여 Writer에게 되돌려 다시 쓰게 하고, 다시 평가합니다. 다시 쓰기는 최대 2회(`MAX_QUALITY_ROUNDS`)이며, 그래도 미달이면 보고서를 내보내되 미달 항목을 터미널과 트레이스에 남깁니다.
+- **출처 추적**: Researcher가 도구로 받은 결과의 URL을 `findings.sources`에 기록해 두고, REFERENCE의 URL이 그 안에 있는지 확인합니다. 도구가 돌려준 적 없는 URL은 걸러집니다.
+- **REFERENCE 정리**: 판정 전에 REFERENCE를 본문 인용에 맞춥니다. 인용되지 않은 항목은 빼고, 인용됐는데 빠진 항목은 조사 결과의 출처 목록에서 찾아 넣습니다. 코드로 맞출 수 있는 것을 다시 쓰게 하지 않기 위해서입니다.
+- 조사한 에이전트나 도구의 이름을 출처로 적은 경우, URL이 없는 항목도 미달로 판정합니다.
+- 단순 사실 질문에 대한 짧은 답변은 Groundedness와 중립성만 판정합니다.
+- 판정 결과는 State의 `quality`와 트레이스의 `quality` 이벤트에 기록됩니다.
 
 ### 라우팅 규칙
 
@@ -99,6 +120,7 @@ REFERENCE는 자료 종류별 소제목 아래에 다음 형식으로 적습니�
 | 제어 메타 | `step`, `rounds` | Supervisor 결정 횟수, 조사 작업 수 (상한 관리) |
 | 제어 메타 | `decision` | 마지막 결정 (충분성, 부족한 항목, 사유, 내보낸 작업) |
 | 제어 메타 | `errors` | 이번 질문에서 실패한 작업 (재시도 판단용) |
+| 제어 메타 | `quality`, `quality_rounds` | 마지막 품질 평가 결과, 품질 미달로 다시 쓰게 한 횟수 |
 
 | 항목 | 설계 |
 |---|---|
@@ -107,8 +129,8 @@ REFERENCE는 자료 종류별 소제목 아래에 다음 형식으로 적습니�
 | 지속성 비용 | `findings`·`errors`는 질문마다 초기화하고, `messages`는 길이를 제한합니다. worker 내부의 도구 호출 기록(검색 결과 본문 등)은 체크포인트에 저장하지 않습니다. |
 | 상관 | 트레이스의 모든 줄에 `run_id`와 `step`이 있고, 시작 이벤트에 `thread_id`, 종료 후 보고서 파일 경로가 기록됩니다. |
 | 재개/복구 | `status`, `step`, `rounds`, `decision.tasks`(하던 작업), `errors`(시도 횟수)가 State에 있습니다. worker 오류는 State에 기록해 1회 재시도하고, 실행이 중단되면 마지막 체크포인트에서 이어서 실행합니다. |
-| 동시 처리 | 병렬 worker가 쓰는 `findings`, `errors`, `messages`에는 reducer가 있습니다. 나머지 필드는 한 번에 한 노드(init, supervisor, 단독 실행되는 writer)만 씁니다. |
-| 종료 보장 | 결정 10회(`MAX_STEPS`), 조사 작업 5건(`MAX_RESEARCH_ROUNDS`), 작업당 시도 2회(`MAX_ATTEMPTS`), worker 내부 도구 호출 8회. 조사 한도에 닿으면 지금까지의 근거로 평가하고 보고서를 쓰며, 근거를 못 구한 항목은 "확인되지 않음"으로 밝힙니다. |
+| 동시 처리 | 병렬 worker가 쓰는 `findings`, `errors`, `messages`에는 reducer가 있습니다. 나머지 필드는 한 번에 한 노드(init, supervisor, 단독 실행되는 writer와 quality)만 씁니다. |
+| 종료 보장 | 결정 10회(`MAX_STEPS`), 조사 작업 5건(`MAX_RESEARCH_ROUNDS`), 작업당 시도 2회(`MAX_ATTEMPTS`), 품질 미달 다시 쓰기 2회(`MAX_QUALITY_ROUNDS`), worker 내부 도구 호출 8회. 조사 한도에 닿으면 지금까지의 근거로 평가하고 보고서를 쓰며, 근거를 못 구한 항목은 "확인되지 않음"으로 밝힙니다. |
 
 ### 설계 포인트
 
@@ -153,6 +175,7 @@ REFERENCE는 자료 종류별 소제목 아래에 다음 형식으로 적습니�
 | **LLM** | OpenAI `gpt-5-mini` (`OPENAI_MODEL`로 변경 가능) |
 | **RAG** | FAISS + `BAAI/bge-m3` (로컬 임베딩), PyMuPDF 파싱, 벡터 + bigram 키워드 하이브리드 검색 |
 | **데이터** | Tavily (웹 검색), 문서 풀 PDF, OpenDART API (국내 상장사 공시), yfinance (시가총액) |
+| **출력** | PDF (PyMuPDF Story, Markdown 변환) |
 | **실행** | Python CLI |
 
 ---
@@ -170,6 +193,8 @@ REFERENCE는 자료 종류별 소제목 아래에 다음 형식으로 적습니�
 │   ├── state.py           # State 스키마 (제어 메타 / 페이로드)
 │   ├── criteria.py        # 투자 평가 항목 · 스코어카드 계산
 │   ├── report.py          # 투자 보고서 형식 검사 (목차 · REFERENCE 표기)
+│   ├── quality.py         # 보고서 품질 평가 (Groundedness · 중립성 · 편향 통제 · 관점 커버리지)
+│   ├── pdf.py             # 보고서 PDF 변환
 │   ├── tools.py           # 웹 검색 · 문서 풀 · DART · 스코어카드 도구
 │   ├── docs.py            # 문서 풀 인덱싱 · 하이브리드 검색 (FAISS)
 │   ├── dart.py            # OpenDART API 클라이언트
@@ -181,7 +206,7 @@ REFERENCE는 자료 종류별 소제목 아래에 다음 형식으로 적습니�
 │   ├── market_researcher.md
 │   ├── evaluator.md
 │   └── writer.md
-├── outputs/               # 실행 결과 저장 (report_YYYYMMDD_HHMMSS.md, traces/<run_id>.jsonl)
+├── outputs/               # 실행 결과 저장 (report_YYYYMMDD_HHMMSS.pdf · .md, traces/<run_id>.jsonl)
 ├── app.py                 # 실행 스크립트 (CLI)
 ├── requirements.txt
 └── README.md
@@ -220,7 +245,7 @@ python app.py                                  # 대화형 모드
 python app.py "Figure AI 투자 가능성 평가해줘"   # 단일 질문
 ```
 
-진행 상황이 터미널에 출력되고, 완성된 보고서는 `outputs/report_YYYYMMDD_HHMMSS.md`로, 결정·사유·작업 결과는 `outputs/traces/<run_id>.jsonl`로 저장됩니다.
+진행 상황이 터미널에 출력되고, 완성된 보고서는 `outputs/report_YYYYMMDD_HHMMSS.pdf`(원본 Markdown은 같은 이름의 `.md`)로, 결정·사유·작업 결과는 `outputs/traces/<run_id>.jsonl`로 저장됩니다.
 
 ---
 

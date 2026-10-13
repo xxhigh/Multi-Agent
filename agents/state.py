@@ -8,7 +8,7 @@
 - 누적 필드는 질문이 시작될 때 비운다(findings, errors). 대화(messages)는 질문·보고서만 담고 길이를 제한한다.
   worker 내부의 도구 호출 기록은 State에 들어오지 않는다.
 - 병렬로 실행되는 worker가 쓰는 필드(findings, errors, messages)에는 reducer가 있다.
-  나머지 필드는 한 superstep에 한 노드만 쓴다(init, supervisor, 단독 실행되는 writer).
+  나머지 필드는 한 superstep에 한 노드만 쓴다(init, supervisor, 단독 실행되는 writer와 quality).
 """
 
 from typing import Annotated, Literal, TypedDict
@@ -42,6 +42,7 @@ class Finding(TypedDict):
     instruction: str
     content: str
     step: int
+    sources: list[str]  # 이 작업에서 도구가 실제로 돌려준 URL (보고서의 REFERENCE가 여기로 추적되는지 검사)
 
 
 class ErrorRecord(TypedDict):
@@ -52,6 +53,14 @@ class ErrorRecord(TypedDict):
     step: int
     attempt: int
     error: str
+
+
+class Quality(TypedDict):
+    """보고서 품질 평가 결과. 항목별로 부합 여부만 판정한다."""
+
+    passed: bool
+    items: dict[str, bool | None]  # 항목 → 부합 여부 (None: 해당 없음)
+    issues: list[str]  # 미달 사유
 
 
 def extend(current: list | None, update: list | None) -> list:
@@ -73,6 +82,8 @@ class EvaluationState(TypedDict):
     step: int  # supervisor 결정 횟수 (상한 MAX_STEPS)
     rounds: int  # researcher에게 맡긴 조사 작업 수 (상한 MAX_RESEARCH_ROUNDS)
     decision: Decision | None  # 마지막 결정
+    quality: Quality | None  # 마지막 품질 평가 결과
+    quality_rounds: int  # 품질 미달로 보고서를 다시 쓰게 한 횟수 (상한 MAX_QUALITY_ROUNDS)
     errors: Annotated[list[ErrorRecord], extend]  # 이번 질문에서 실패한 작업
 
 

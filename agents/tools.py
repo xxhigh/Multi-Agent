@@ -212,6 +212,12 @@ def get_financial_statements(company: str, report: str = "annual", year: int | N
                 continue
             fmt = (lambda v: "N/A" if v is None else f"{v:,.0f}원") if key == "기본주당이익" else _krw
             out.append(f"| {key} | " + " | ".join(fmt(v) for v in vals) + " |")
+    # 보고서의 REFERENCE 에 그대로 옮길 수 있는 출처 표기 (접수번호 앞 8자리가 접수일)
+    rcept = rows[0].get("rcept_no", "")
+    if len(rcept) >= 8:
+        title = {"annual": "사업보고서", "half": "반기보고서", "q1": "분기보고서(1분기)", "q3": "분기보고서(3분기)"}[report]
+        out += ["", f"출처: [웹페이지] 금융감독원 전자공시시스템({rcept[:4]}-{rcept[4:6]}-{rcept[6:8]}). "
+                    f"*{corp.name} {title} ({y})*. DART, https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept}"]
     return "\n".join(out)
 
 
