@@ -14,5 +14,6 @@ def _load(name: str) -> str:
 
 SUPERVISOR_PROMPT = _load("supervisor")
 RESEARCHER_PROMPT = _load("researcher")
+WEB_SEARCHER_PROMPT = _load("web_searcher")
 ANALYST_PROMPT = _load("analyst")
 WRITER_PROMPT = _load("writer")

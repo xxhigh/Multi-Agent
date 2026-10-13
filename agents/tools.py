@@ -2,16 +2,20 @@
 
 - 재무제표·기업개황·공시: OpenDART
 - 주가·시가총액: Yahoo Finance(yfinance)
+- 산업 전략·정책·전망 보고서: data/docs 문서 풀 (FAISS, bge-m3)
+- 뉴스·업계 동향: Tavily 웹 검색
 수치 계산은 LLM이 아니라 Python에서 처리해 정확도를 확보한다.
 """
 
 import ast
 import math
 import operator
+import os
 from functools import lru_cache, wraps
 
 import yfinance as yf
 from langchain_core.tools import tool
+from tavily import TavilyClient
 
 from . import dart, rag
 from .dart import DartError
@@ -279,6 +283,24 @@ def search_business_report(company: str, query: str, k: int = 5) -> str:
     return rag.search(company, query, k)
 
 
+@tool
+def search_documents(query: str, k: int = 5) -> str:
+    """문서 풀(data/docs)에서 질문과 관련된 부분을 검색한다 (RAG).
+
+    검색 범위: 정부의 AI반도체 산업 전략, 연구기관(KISDI)의 AI반도체 시장·기술·산업 동향 보고서,
+    컨설팅사의 산업 전망 보고서. 개별 기업의 재무 수치가 아니라 산업 규모·성장 전망, 기술 동향,
+    정부 정책·지원, 경쟁 구도 같은 산업 차원의 근거가 필요할 때 사용한다.
+    query: 찾을 내용 (예: 'AI반도체 시장 규모 전망', '국산 NPU 지원 정책', 'HBM 수요 전망')
+    k: 가져올 문단 수
+    처음 호출할 때는 임베딩 모델을 올리느라 시간이 걸린다.
+    """
+    try:
+        from . import docs  # 임베딩 모델 의존성이 무거워서 실제로 쓸 때 불러온다
+        return docs.search(query, max(1, min(k, 10)))
+    except Exception as e:  # noqa: BLE001 - 인덱스 없음·모델 로드 실패 등을 LLM이 읽을 수 있게 반환
+        return f"오류: 문서 풀 검색 실패 ({type(e).__name__}: {e})"
+
+
 # ---------------------------------------------------------------------------
 # Analyst 도구: 지표 계산
 # ---------------------------------------------------------------------------
@@ -367,6 +389,51 @@ def _ttm_owner_ni(corp: dart.Corp, annual_year: int, annual_ni) -> tuple:
     return None, None, None
 
 
+# ---------------------------------------------------------------------------
+# Web Searcher 도구: 웹 검색
+# ---------------------------------------------------------------------------
+
+WEB_TOPICS = ("general", "news", "finance")
+WEB_TIME_RANGES = ("day", "week", "month", "year")
+WEB_CONTENT_PREVIEW = 500
+
+
+@lru_cache(maxsize=1)
+def _tavily() -> TavilyClient:
+    return TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+
+
+@tool
+def web_search(query: str, topic: str = "news", time_range: str | None = None, max_results: int = 5) -> str:
+    """Tavily로 웹을 검색해 제목·날짜·URL·본문 요약을 반환한다.
+
+    DART 공시나 사업보고서에 없는 외부 정보(최근 뉴스, 업계·경쟁사 동향, 증권가 시각, 규제·정책)를 찾을 때 사용한다.
+    query: 검색어. 회사명과 주제를 함께 넣는다 (예: '셀트리온 짐펜트라 미국 판매 실적')
+    topic: 'news'(뉴스 기사, 기본값), 'finance'(금융·시장 정보), 'general'(일반 웹)
+    time_range: 최근 기간으로 제한. 'day', 'week', 'month', 'year' 중 하나. 생략하면 제한 없음
+    max_results: 가져올 결과 수 (1~10)
+    """
+    if not os.getenv("TAVILY_API_KEY", "").strip():
+        return "오류: .env에 TAVILY_API_KEY가 설정되어 있지 않아 웹 검색을 할 수 없습니다."
+    if topic not in WEB_TOPICS:
+        return f"오류: topic은 {list(WEB_TOPICS)} 중 하나여야 합니다."
+    if time_range is not None and time_range not in WEB_TIME_RANGES:
+        return f"오류: time_range는 {list(WEB_TIME_RANGES)} 중 하나여야 합니다."
+    try:
+        res = _tavily().search(query, topic=topic, time_range=time_range, max_results=max(1, min(max_results, 10)))
+    except Exception as e:  # noqa: BLE001 - 한도 초과·네트워크 오류 등을 LLM이 읽을 수 있게 반환
+        return f"오류: 웹 검색 실패 ({type(e).__name__}: {e})"
+    results = res.get("results", [])
+    if not results:
+        return f"'{query}'에 대한 웹 검색 결과가 없습니다."
+    lines = [f"[웹 검색: '{query}', topic={topic}, 기간={time_range or '전체'}]"]
+    for i, r in enumerate(results, 1):
+        published = f" ({r['published_date']})" if r.get("published_date") else ""
+        lines.append(f"\n--- 결과 {i}{published} ---\n{r.get('title', '')}\n{r.get('url', '')}\n"
+                     f"{(r.get('content') or '')[:WEB_CONTENT_PREVIEW]}")
+    return "\n".join(lines)
+
+
 _OPS = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
     ast.Div: operator.truediv, ast.Pow: operator.pow, ast.USub: operator.neg,
@@ -394,5 +461,6 @@ def calculator(expression: str) -> str:
 
 
 RESEARCH_TOOLS = [search_company, get_company_overview, get_financial_statements,
-                  get_price_summary, get_recent_disclosures, search_business_report]
+                  get_price_summary, get_recent_disclosures, search_business_report, search_documents]
 ANALYST_TOOLS = [calculate_financial_ratios, search_business_report, calculator]
+WEB_TOOLS = [web_search]

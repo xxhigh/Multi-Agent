@@ -4,7 +4,7 @@
     python app.py                         # 대화형 모드
     python app.py "셀트리온 재무 분석해줘"   # 단일 질문
 
-리포트는 outputs/ 에 저장된다.
+리포트는 outputs/ 에, 실행 트레이스(결정·사유·작업 결과)는 outputs/traces/<run_id>.jsonl 에 저장된다.
 """
 
 import sys
@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from agents import build_graph  # noqa: E402
+from agents import build_graph, trace  # noqa: E402
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "outputs"
 
@@ -28,41 +28,66 @@ def _save_report(report: str) -> Path:
     return path
 
 
-def run(graph, question: str, thread_id: str) -> None:
+def run(graph, question: str | None, thread_id: str) -> bool:
+    """질문을 실행한다. question이 None이면 중단된 실행을 마지막 체크포인트에서 재개한다. 성공하면 True."""
     config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
-    report = None
-    stream = graph.stream({"messages": [("user", question)]}, config, stream_mode="updates", subgraphs=True)
-    for namespace, update in stream:
-        for node, data in update.items():
-            if namespace:  # researcher/analyst 내부의 도구 호출 표시
-                if node == "agent" and data and data["messages"][-1].tool_calls:
-                    for call in data["messages"][-1].tool_calls:
-                        args = ", ".join(f"{k}={v}" for k, v in call["args"].items())
-                        print(f"      🔧 {call['name']}({args})")
-            elif node == "supervisor":
-                nxt = data.get("next")
-                print(f"  🧭 supervisor → {nxt}")
-            elif data and data.get("messages"):
-                msg = data["messages"][-1]
-                print(f"  ✅ {node} 완료 ({len(msg.content)}자)")
-                if node == "writer":
-                    report = msg.content
+    payload = {"messages": [("user", question)]} if question is not None else None
+    report, status = None, None
+    try:
+        for namespace, update in graph.stream(payload, config, stream_mode="updates", subgraphs=True):
+            for node, data in update.items():
+                if not data:
+                    continue
+                if namespace:  # worker 내부의 도구 호출 표시
+                    if node == "agent" and data["messages"][-1].tool_calls:
+                        agent = namespace[0].split(":")[0]
+                        for call in data["messages"][-1].tool_calls:
+                            args = ", ".join(f"{k}={v}" for k, v in call["args"].items())
+                            print(f"      🔧 [{agent}] {call['name']}({args})")
+                elif node == "init":
+                    print(f"  🆔 run_id={data['run_id']}")
+                elif node == "supervisor":
+                    status = data.get("status", status)
+                    decision = data.get("decision")
+                    if decision:
+                        agents = ", ".join(t["agent"] + (" (재시도)" if t["attempt"] > 1 else "") for t in decision["tasks"])
+                        missing = f" (근거 부족: {', '.join(decision['missing'])})" if decision["missing"] else ""
+                        print(f"  🧭 [{decision['step']}] supervisor → {agents}{missing}\n       사유: {decision['reason']}")
+                    else:
+                        print(f"  🏁 supervisor → 종료 ({status})")
+                elif data.get("errors"):
+                    for e in data["errors"]:
+                        print(f"  ⚠️  {node} 실패 (시도 {e['attempt']}): {e['error']}")
+                elif data.get("report"):
+                    report = data["report"]
+                    print(f"  ✅ {node} 완료 ({len(report)}자)")
+                elif data.get("findings"):
+                    print(f"  ✅ {node} 완료 ({len(data['findings'][-1]['content'])}자)")
+    except Exception as e:  # noqa: BLE001 - 진행 상태는 체크포인트에 남아 있으므로 재개할 수 있다
+        print(f"\n❌ 실행 중단: {type(e).__name__}: {e}")
+        return False
 
+    run_id = graph.get_state(config).values["run_id"]
     if report:
         print("\n" + "=" * 70 + "\n" + report + "\n" + "=" * 70)
-        print(f"\n📄 리포트 저장: {_save_report(report)}")
+        path = _save_report(report)
+        trace.log(run_id, "report_saved", path=str(path))
+        print(f"\n📄 리포트 저장: {path}")
+    elif status == "failed":
+        print("\n❌ 리포트를 작성하지 못했습니다.")
+    print(f"🔎 트레이스: {trace.path(run_id)}")
+    return status == "done"
 
 
 def main() -> None:
-    # InMemorySaver를 공유하므로 같은 thread_id로 후속 질문을 이어갈 수 있다.
+    # InMemorySaver를 공유하므로 같은 thread_id로 후속 질문을 이어가거나 중단된 실행을 재개할 수 있다.
     graph = build_graph()
     thread_id = str(uuid.uuid4())
 
     if len(sys.argv) > 1:
-        run(graph, " ".join(sys.argv[1:]), thread_id)
-        return
+        sys.exit(0 if run(graph, " ".join(sys.argv[1:]), thread_id) else 1)
 
-    print("💰 재무 분석 agent (종료: exit)")
+    print("💰 재무 분석 agent (종료: exit, 중단된 실행 재개: resume)")
     while True:
         try:
             q = input("\n질문> ").strip()
@@ -70,8 +95,14 @@ def main() -> None:
             break
         if q.lower() in {"exit", "quit", "q"}:
             break
-        if q:
-            run(graph, q, thread_id)
+        if q.lower() in {"resume", "재개"}:
+            if graph.get_state({"configurable": {"thread_id": thread_id}}).next:
+                run(graph, None, thread_id)
+            else:
+                print("재개할 실행이 없습니다.")
+        elif q and not run(graph, q, thread_id):
+            if graph.get_state({"configurable": {"thread_id": thread_id}}).next:
+                print("resume 을 입력하면 중단된 지점부터 이어서 실행합니다.")
 
 
 if __name__ == "__main__":
