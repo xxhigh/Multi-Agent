@@ -19,7 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 
 BASE_URL = "https://opendart.fss.or.kr/api"
-CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache"
+CACHE_DIR = Path(__file__).resolve().parents[2] / ".cache"
 CORP_CACHE = CACHE_DIR / "corp_codes.json"
 CORP_CACHE_TTL = 7 * 24 * 3600
 

@@ -1,0 +1,29 @@
+digraph G {
+  rankdir=TB; bgcolor="white"; fontname="Noto Sans CJK KR";
+  node [shape=box, style="rounded,filled", fontname="Noto Sans CJK KR", fontsize=12, color="#555555"];
+  edge [fontname="Noto Sans CJK KR", fontsize=10, color="#666666"];
+
+  start [label="START\n사용자 질문", shape=oval, fillcolor="#eeeeee"];
+  sup [label="Supervisor\n① 접수(대상 기업·범위)\n② 관점별 충분성 = 규칙 검사 + LLM 판정\n③ 허용 후보 안에서 다음 담당 선택\n④ 상한 검사 (step·재작업·수정)", fillcolor="#e2e8f0", width=3.6];
+  route [label="route_after_supervisor()\n순수 함수: State.next만 읽어 분기\n(add_conditional_edges)", shape=diamond, fillcolor="#fef3c7", fontsize=10];
+  res [label="Researcher\nReAct 서브그래프\nDART·공시·주가·사업보고서 RAG", fillcolor="#e0f2fe"];
+  ana [label="Analyst\nReAct 서브그래프\n재무 비율 계산·해석", fillcolor="#ede9fe"];
+  wri [label="Writer\nSUMMARY·4관점·원본 표·한계\nREFERENCE는 코드가 생성", fillcolor="#dcfce7"];
+  eva [label="Evaluator (품질 평가)\n규칙 검사 → 통과 시 LLM Judge\nGroundedness·중립성·편향 통제·관점 커버리지", fillcolor="#fde68a"];
+  endn [label="END\nFINISH / FINISH_WARNING", shape=oval, fillcolor="#eeeeee"];
+  obs [label="관측성 계층 (State 밖)\noutputs/runs/{trace_id}/\ndecisions.jsonl · evidence/E*.md · run-summary.json\n+ LangSmith metadata.trace_id", shape=note, fillcolor="#f8fafc", fontsize=10];
+
+  start -> sup;
+  sup -> route;
+  route -> res [label="근거 부족·재작업"];
+  route -> ana [label="지표 부족·재작업"];
+  route -> wri [label="4관점 충분\n또는 품질 미달(문장)"];
+  route -> eva [label="초안 완료"];
+  route -> endn [label="통과 / 상한 도달"];
+  res -> sup [label="항상 복귀"];
+  ana -> sup [label="항상 복귀"];
+  wri -> sup;
+  eva -> sup [label="평가 결과\n(근거 부족이면 수집 담당으로)"];
+  sup -> obs [style=dashed, arrowhead=none, color="#94a3b8"];
+  {rank=same; res; ana; wri; eva;}
+}

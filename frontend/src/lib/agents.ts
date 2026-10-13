@@ -5,6 +5,7 @@ export const AGENTS: Record<Agent, { label: string; role: string; dot: string; t
   researcher: { label: "Researcher", role: "데이터 수집", dot: "bg-sky-500", text: "text-sky-700 dark:text-sky-300", ring: "ring-sky-400" },
   analyst: { label: "Analyst", role: "비율 분석", dot: "bg-violet-500", text: "text-violet-700 dark:text-violet-300", ring: "ring-violet-400" },
   writer: { label: "Writer", role: "리포트 작성", dot: "bg-emerald-500", text: "text-emerald-700 dark:text-emerald-300", ring: "ring-emerald-400" },
+  evaluator: { label: "Evaluator", role: "품질 평가", dot: "bg-amber-500", text: "text-amber-700 dark:text-amber-300", ring: "ring-amber-400" },
 };
 
 export const TOOL_LABELS: Record<string, string> = {

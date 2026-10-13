@@ -1,161 +1,141 @@
-# finance_agent
+# Subject
+본 프로젝트는 국내 상장사 1곳을 **사업·기술 경쟁력, 성장성·시장 평가, 주주·지배구조·공시, 재무 건전성·산업 특성** 4개 관점에서 분석하는 보고서를
+**Supervisor 패턴** 기반 멀티 에이전트로 설계·개발한 프로젝트임.
+DART 공시·재무제표·사업보고서(RAG)와 Yahoo Finance 시세를 근거로 쓰며, 보고서는 특정 판단을 권하지 않는 **중립적 다관점 분석**을 목표로 함.
 
-국내 상장사 재무 분석 멀티 에이전트입니다.
-회사 이름을 입력하면 **Supervisor · Researcher · Analyst · Writer** 에이전트가 협업해 DART 공시와 사업보고서를 바탕으로 재무 분석 리포트를 작성합니다.
+## Overview
+- **Objective** : 하나의 기업을 4개 관점에서 근거 기반으로 분석하고, 품질 평가를 통과한 보고서만 내보낸다
+- **Pattern** : Supervisor — 보고서 작성 전에 "근거가 충분한가"를 중앙에서 판단하고, 부족한 관점만 골라 재조사시키는 흐름이 필요했다.
+  사전 분해(Orchestrator)보다 수집 결과에 따라 다음 행동이 바뀌는 구조가 이 문제에 맞다고 판단했다.
+- **동적 처리** : 실행 순서가 코드에 없다. supervisor가 매 턴 State(관점별 충분성·평가 결과·상한)를 보고 `next`를 정하고,
+  `add_conditional_edges`가 그 값으로 분기한다. 같은 질문이라도 수집 결과에 따라 경로가 달라진다
+  (예: `researcher → analyst → researcher(공시 재작업) → writer → evaluator → writer(수정) → evaluator → FINISH`).
 
-## 예시: 셀트리온
+## Analysis Perspectives (과제 4관점 매핑)
 
-> 질문: `셀트리온 재무 분석해줘`
+| 과제 관점 | 보고서 절 | 작성 담당 | 충분성 판정에 필요한 근거 |
+|---|---|---|---|
+| 기술 성숙도 | 1. 사업·기술 경쟁력 | researcher | 사업보고서 RAG |
+| 시장성 | 2. 성장성·시장 평가 | analyst | 주가 요약 + 재무 비율 |
+| 이해관계자 | 3. 주주·지배구조·공시 | researcher | 최근 공시 + 기업개황 |
+| 도메인 적용 | 4. 재무 건전성·산업 특성 | analyst | 재무 비율 + 재무제표 (업종 특성 반영, 금융사 예외 처리) |
 
-![셀트리온 재무 분석 리포트](docs/images/celltrion_report.png)
+## Features
+- **PDF/공시 자료 기반 정보 추출** : DART 사업보고서 원문(XML)에서 서술형 섹션만 잘라 RAG 인덱싱, 표는 행 단위 텍스트로 보존
+- **하이브리드 검색** : 벡터 유사도 후보 30개 + 한국어 bigram 키워드 점수로 재정렬
+- **숫자는 Python이 계산** : 재무 비율·TTM PER은 도구가 직접 계산, 추가 계산은 AST 기반 안전 계산기만 허용
+- **근거 충분성 판정 (Supervisor)** : 규칙 검사(필수 근거 종류·내용·근거 ID 연결)를 먼저 하고, 통과한 관점만 LLM이 충분성 판정
+- **재작업 요청** : 부족한 관점만 골라 그 근거를 모으는 담당(researcher/analyst)에게 사유와 함께 되돌림 (관점별 최대 3회)
+- **확증 편향 방지 전략** : 관점별 서로 다른 근거 2개 이상 인용 규칙, 보고서 전체 출처 3종 이상 규칙, 악화 지표 동시 서술 지시, 우열·추천 표현 금지
+- **보고서 품질 평가** : 규칙 검사 → LLM Judge의 Hybrid 평가(Groundedness·중립성·편향 통제·관점 커버리지). 미달 시 문장 문제는 writer 수정, 근거 부족은 수집 담당 재조사로 Loop
+- **인용 ↔ 출처 1:1 연결** : 본문 `[E#]` 인용을 코드가 읽어 REFERENCE 절을 자동 생성 (모델이 출처를 지어낼 수 없음)
 
-<details>
-<summary>리포트 전체 화면 보기</summary>
+## Tech Stack
+- Framework : LangGraph (Supervisor + ReAct 서브그래프), LangChain Core
+- LLM/Generator : OpenAI `gpt-5-mini` (`OPENAI_MODEL`로 변경)
+- LLM/Judge : OpenAI `gpt-5-mini` (`OPENAI_JUDGE_MODEL`로 생성 모델과 분리 가능)
+- Retrieval : ChromaDB (Persistent, cosine) + bigram 키워드 재정렬 — Hit Rate@K, MRR : 미측정
+- Embedding : OpenAI `text-embedding-3-small`
+- Data : OpenDART API (재무제표·기업개황·공시·사업보고서 원문), yfinance (주가·시가총액)
+- Tracing : LangSmith (`metadata.trace_id`로 로컬 결정 로그와 연결)
+- Backend / Frontend : FastAPI + SSE / Next.js (선택 사항)
 
-![셀트리온 재무 분석 리포트 전체](docs/images/celltrion_report_full.png)
+## Agents
+- **Supervisor** : 대상 기업·범위 접수, 관점별 근거 충분성 판정, 허용 후보 안에서 다음 담당 선택, 재작업·수정 요청, 종료 결정. 하위 에이전트끼리는 엣지가 없고 모든 통신은 supervisor를 거친다
+- **Researcher** : 기업개황·재무제표·주가·공시·사업보고서 RAG 수집 → 담당 관점(사업·기술, 주주·공시) 정리
+- **Analyst** : 재무 비율 계산·해석 → 담당 관점(성장성·시장, 재무 건전성) 정리
+- **Writer** : 관점별 결과와 근거만으로 보고서 작성 (SUMMARY → 1~4 관점 → 원본 표 → 한계 → REFERENCE)
+- **Evaluator** : 보고서 품질 평가 노드 (규칙 검사 + LLM Judge), 실패 원인에 따라 되돌릴 담당 지정
 
-</details>
+### Supervisor 필수 항목 구현 위치
 
-<details>
-<summary>시작 화면</summary>
-
-![시작 화면](docs/images/home.png)
-
-</details>
-
----
-
-## 에이전트 설계
-
-### 전체 구조
-
-LangGraph의 **Supervisor 패턴**으로 구성했습니다. Supervisor가 대화 기록을 보고 다음에 일할 에이전트를 한 명씩 고르고, 각 에이전트는 작업을 끝내면 다시 Supervisor에게 돌아옵니다.
-
-```
-                 ┌──────────── supervisor ────────────┐
-                 │        │           │               │
-             researcher  analyst    writer           END
-                 └────────┴───────────┴──▶ supervisor
-```
-
-| 에이전트 | 역할 | 사용 도구 |
-|---|---|---|
-| **Supervisor** | 다음 작업자 선택 및 지시 작성 (structured output으로 라우팅) | - |
-| **Researcher** | 기업 개황, 재무제표, 주가, 최근 공시, 사업보고서 본문 수집 | `search_company`, `get_company_overview`, `get_financial_statements`, `get_price_summary`, `get_recent_disclosures`, `search_business_report` |
-| **Analyst** | 성장성·수익성·안정성·현금흐름·밸류에이션 지표 계산 및 해석 | `calculate_financial_ratios`, `search_business_report`, `calculator` |
-| **Writer** | 수집·분석 결과만으로 한국어 Markdown 리포트 작성 | - |
-
-### 라우팅 규칙
-
-- 일반 분석·비교 요청: `researcher → analyst → writer → FINISH`
-- 단순 사실 질문 (예: "현대차 작년 매출은?"): `researcher → writer → FINISH`
-- 해외 기업이나 재무와 무관한 요청: writer가 지원 범위를 안내
-- Supervisor는 `Route(next, instruction)` Pydantic 스키마로 결정을 내려서 잘못된 노드로 가는 일이 없습니다.
-
-### 설계 포인트
-
-1. **에이전트마다 ReAct 서브그래프**
-   Researcher와 Analyst는 각각 `LLM ↔ ToolNode` 루프를 도는 서브그래프입니다. 메인 대화에는 서브그래프의 최종 답변만 남겨서, 도구 호출 기록 때문에 컨텍스트가 커지지 않게 했습니다.
-
-2. **숫자는 LLM이 아니라 Python이 계산**
-   재무 비율(ROE, PER, FCF 등)은 `calculate_financial_ratios`가 DART 원천 데이터로 직접 계산합니다. 추가 계산도 AST 기반 안전한 `calculator` 도구를 거치게 해서 LLM의 암산 오류를 막았습니다.
-   PER은 분기 보고서가 있으면 **TTM(최근 12개월) 지배주주 순이익** 기준으로 계산합니다.
-
-3. **환각 방지 프롬프트**
-   모든 에이전트에 "도구 결과에 있는 수치만 사용하고, 없는 값은 만들지 않는다"는 규칙을 넣었습니다. Writer는 대화에 있는 수치만 인용하고 출처(DART / Yahoo Finance)를 표기합니다.
-
-4. **사업보고서 RAG (하이브리드 검색)**
-   - DART에서 최신 사업보고서 원문(XML)을 내려받아 목차 기준으로 **서술형 섹션만** 잘라냅니다 (사업의 내용, 경영진단 및 분석의견, 투자자 보호 사항, 영업부문·우발채무 주석). 재무제표 숫자는 API로 정확하게 조회하므로 제외했습니다.
-   - 표는 행 단위 텍스트로 바꿔 구조를 유지하고, 1,000자 chunk(150자 overlap)로 나눠 OpenAI 임베딩 후 Chroma에 저장합니다. 보고서(접수번호)별로 한 번만 인덱싱합니다.
-   - 검색은 벡터 유사도로 후보 30개를 뽑은 뒤 **한국어 bigram 키워드 점수**를 더해 다시 정렬합니다. 조사나 띄어쓰기가 달라도 키워드가 잘 맞습니다.
-
-5. **안정성**
-   - 도구 호출이 8번을 넘으면 도구 없이 최종 답변을 강제해서 무한 루프를 막습니다.
-   - DART 오류는 예외 대신 LLM이 읽을 수 있는 문자열로 돌려줘서, 에이전트가 스스로 다른 방법을 시도합니다.
-   - 약칭(현대차, 삼전, 엔솔 등)을 정식 회사명으로 바꾸고, 회사명이 애매하면 후보 목록을 돌려줍니다.
-   - 연결재무제표가 없으면 별도재무제표로 대체하고, 금융사는 ROE·PBR·배당성향 중심으로 해석합니다.
-
-6. **실시간 진행 상황 스트리밍**
-   FastAPI가 `graph.stream(subgraphs=True)` 결과를 SSE 이벤트(`route`, `tool_call`, `tool_result`, `worker_done`, `report`)로 바꿔 보내고, 프론트엔드가 에이전트 파이프라인과 도구 호출 타임라인을 실시간으로 보여줍니다.
-   `InMemorySaver` 체크포인터를 써서 같은 `thread_id`로 후속 질문을 이어갈 수 있습니다.
-
----
-
-## 기술 스택
-
-| 구분 | 기술 |
+| 과제 필수 항목 | 구현 |
 |---|---|
-| **Agent** | LangGraph (Supervisor + ReAct 서브그래프), LangChain Core |
-| **LLM** | OpenAI `gpt-5-mini` (`OPENAI_MODEL`로 변경 가능), `text-embedding-3-small` |
-| **RAG** | ChromaDB (Persistent), 벡터 + bigram 키워드 하이브리드 검색 |
-| **데이터** | OpenDART API (재무제표·기업개황·공시·사업보고서 원문), yfinance (주가·시가총액) |
-| **Backend** | Python, FastAPI, Uvicorn, SSE 스트리밍 |
-| **Frontend** | Next.js 16, React 19, TypeScript, Tailwind CSS 4, react-markdown (+ remark-gfm) |
+| 하위 에이전트는 Supervisor하고만 통신 | `graph.py` — worker → supervisor 엣지만 존재, worker 간 엣지 없음 |
+| State 기반 `add_conditional_edges` 분기, 순서 하드코딩 금지 | `supervisor.py`가 `next` 기록 → `graph.route_after_supervisor()`(순수 함수)가 분기 |
+| 근거 충분성 평가 후에만 보고서 작성 (스텝 고정 금지) | `supervisor.py` 4단계 — 4관점 모두 충분하거나 재작업 한도 소진 시에만 `writer`가 허용 후보가 됨 |
+| 근거 부족 시 해당 하위 에이전트 재작업 | `responsible_workers()` — 없는 근거의 수집 담당 / 내용이 부족하면 작성 담당에게 사유와 함께 재지시 (`is_rework` 로그) |
 
----
+판단과 분기를 나눴다. LLM은 충분성 판정과 '허용된 후보 중' 다음 담당만 고르고, 허용 후보 계산·상한 검사는 코드가 한다.
+LLM이 후보 밖을 고르면 코드가 기본 경로로 교체하고 그 사실을 결정 로그(`llm_override`)에 남긴다.
 
-## 프로젝트 구조
+## State Schema
+코드: [`finance_agent/state.py`](finance_agent/state.py)
 
+```python
+class FinanceState(MessagesState):
+    # 작업 페이로드
+    question, company: str
+    perspectives: Annotated[dict[str, PerspectiveResult], merge_dict]   # 관점별 결과·근거 ID·충분성
+    evidence: Annotated[list[EvidenceRef], operator.add]                # 근거 참조 (원문은 파일)
+    report: str | None
+    eval_result: EvalVerdict | None
+    # 제어 메타데이터
+    trace_id: str; next: str; instruction: str; target_perspectives: list[str]
+    step_count: int; max_steps: int
+    attempts: Annotated[dict[str, int], merge_dict]; revision_count: int
+    node_status: Annotated[dict[str, str], merge_dict]; last_error: str | None; status: str
 ```
-.
+
+- **제어 vs 페이로드 분리** : 위 두 블록으로 분리. supervisor 라우팅은 제어 메타와 관점별 `sufficient` 플래그만 보고 결정한다
+- **관측성 위치** : 결정 로그(노드·결정·사유·대상 관점·재작업 여부)는 State가 아니라 `outputs/runs/{trace_id}/decisions.jsonl`에 적재
+- **지속성 비용** : 도구 원문(재무제표 표, 사업보고서 발췌 등)은 `evidence/E*.md` 파일로 저장하고 State에는 `EvidenceRef`만 둔다. `messages`는 사용자 질문과 최종 보고서만 담고, 하위 에이전트에게는 필요한 정보만 골라 새 입력으로 준다
+- **상관** : `trace_id` 하나로 State ↔ decisions.jsonl ↔ evidence 파일 ↔ LangSmith run(`metadata.trace_id`, tag `trace:{id}`)을 연결
+- **재개/복구** : `InMemorySaver` checkpointer + `node_status`·`last_error`·`attempts`. 하위 에이전트 예외는 그래프를 멈추지 않고 `error`로 기록되며 supervisor가 재시도 여부를 판단
+- **동시 처리** : 누적 필드는 reducer로 병합 — `evidence`는 이어붙이기, `perspectives`·`attempts`·`node_status`는 dict 병합 (같은 관점을 여러 담당이 채우면 내용·근거 ID를 합침)
+- **종료 보장** : `config.py` 상수로 코드에서 강제 — supervisor 판단 16회, 관점별 작업 3회(재작업 2회), 품질 미달 수정 2회, ReAct 도구 호출 8회, LangGraph `recursion_limit` 80. 상한 도달 시 `FINISH_WARNING`으로 경고를 붙여 종료
+
+## Architecture
+![architecture](docs/images/architecture.png)
+
+## Directory Structure
+```
 ├── finance_agent/
-│   ├── graph.py      # Supervisor 멀티 에이전트 그래프
-│   ├── prompts.py    # 에이전트별 시스템 프롬프트
-│   ├── tools.py      # 데이터 수집 · 재무 비율 계산 도구
-│   ├── dart.py       # OpenDART API 클라이언트
-│   └── rag.py        # 사업보고서 파싱 · 인덱싱 · 하이브리드 검색
-├── backend/
-│   └── app.py        # FastAPI (SSE 분석 API, 리포트 조회 API)
-├── frontend/         # Next.js 웹 UI
-├── main.py           # CLI 실행
-└── requirements.txt
+│   ├── graph.py           # Supervisor 그래프 연결 (add_conditional_edges)
+│   ├── supervisor.py      # 접수·충분성 판정·라우팅·재작업·종료 결정
+│   ├── state.py           # State Schema
+│   ├── config.py          # 상한·관점 정의 (코드로 강제하는 정책)
+│   ├── observability.py   # trace_id, 결정 로그, 근거 파일
+│   ├── runner.py          # 초기 State·실행 config·산출물 저장 (CLI·API 공용)
+│   ├── llm.py             # 모델 호출 창구
+│   ├── agents/            # researcher·analyst(workers.py), writer, evaluator
+│   ├── prompts/           # 에이전트별 프롬프트 템플릿
+│   └── tools/             # OpenDART 클라이언트, 사업보고서 RAG, 재무 도구
+├── tests/                 # 가짜 LLM으로 라우팅·재작업·평가 루프·종료 검증
+├── outputs/               # 실행 결과 (reports/, runs/{trace_id}/)
+├── backend/ frontend/     # FastAPI SSE API, Next.js UI (선택)
+├── docs/                  # 아키텍처 그림
+├── main.py                # CLI 실행 스크립트
+└── README.md
 ```
 
-## 실행 방법
-
-### 1. 환경 변수
-
-루트에 `.env` 파일을 만듭니다.
-
-```env
-OPENAI_API_KEY=sk-...
-OPENDART_API_KEY=...      # https://opendart.fss.or.kr 에서 발급
-OPENAI_MODEL=gpt-5-mini   # 선택
-```
-
-### 2. 백엔드
-
+## Usage
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn backend.app:app --reload --port 8000
+cp .env.example .env        # OPENAI_API_KEY, OPENDART_API_KEY, LangSmith 키 입력
+
+python main.py "셀트리온 재무 분석해줘"
 ```
 
-### 3. 프론트엔드
+실행이 끝나면 다음이 생성된다.
 
+| 파일 | 내용 |
+|---|---|
+| `outputs/reports/report_{trace_id}.md` | 최종 보고서 |
+| `outputs/runs/{trace_id}/decisions.jsonl` | supervisor 라우팅·재작업·평가 결정과 사유 |
+| `outputs/runs/{trace_id}/run-summary.json` | 라우팅 순서, 재작업 횟수, 수정 횟수, 최종 상태 |
+| `outputs/runs/{trace_id}/evidence/E*.md` | 근거 원문 |
+
+테스트 (API 키 불필요):
 ```bash
-cd frontend
-cp .env.example .env.local   # NEXT_PUBLIC_API_URL=http://localhost:8000
-npm install
-npm run dev                  # http://localhost:3000
+pytest -q
 ```
 
-### CLI로 실행
+웹 UI (선택): `uvicorn backend.app:app --port 8000` 후 `cd frontend && npm install && npm run dev`
 
-```bash
-python main.py                         # 대화형 모드
-python main.py "셀트리온 재무 분석해줘"   # 단일 질문
-```
+## Contributors
+- 심혁 : Supervisor 재설계(충분성 판정·재작업·종료 가드), State Schema, 품질 평가 노드, 관측성 계층, 테스트, README
+- (원본 작성자) : 재무 도구·OpenDART 클라이언트·사업보고서 RAG·웹 UI
 
-## API
-
-| Method | Path | 설명 |
-|---|---|---|
-| `POST` | `/api/analyze` | 질문을 받아 에이전트 진행 상황을 SSE로 스트리밍 |
-| `GET` | `/api/reports` | 저장된 리포트 목록 |
-| `GET` | `/api/reports/{name}` | 리포트 본문 |
-| `GET` | `/api/health` | 헬스 체크 |
-
----
-
-> 본 프로젝트의 리포트는 정보 제공 목적이며 투자 권유가 아닙니다.
+> 본 프로젝트의 보고서는 정보 제공 목적이며 투자 권유가 아닙니다.
