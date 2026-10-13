@@ -14,14 +14,21 @@ os.environ.setdefault("OPENAI_API_KEY", "sk-test-not-used")
 from finance_agent import config  # noqa: E402
 
 TOOL_OUTPUTS = {
-    "search_business_report": "[삼성전자 2025 사업보고서 검색: '사업 개요'] 원문: https://dart.fss.or.kr/dsaf001/main.do?rcpNo=1\n"
-                              "DX·DS 부문으로 구성. DS 부문 매출 비중 40%. 연구개발비 30조.",
-    "get_price_summary": "[삼성전자 주가 요약, 기간 1y]\n최근 종가: 80,000원\n기간 수익률: 12.00%",
-    "get_company_overview": "회사명: 삼성전자 (SAMSUNG ELECTRONICS)\n종목코드: 005930, 시장: 코스피\n대표자: 홍길동",
-    "get_recent_disclosures": "[삼성전자 최근 90일 공시]\n2026-09-01 | 분기보고서 | 삼성전자 | https://dart.fss.or.kr/dsaf001/main.do?rcpNo=2",
-    "get_financial_statements": "[삼성전자 연결재무제표, annual] (원본 표: 숫자·단위를 수정하지 말고 그대로 인용)\n\n"
-                                "| 계정 | 2025 | 2024 |\n|---|---:|---:|\n| 매출액 | 300.00조 | 280.00조 |",
-    "calculate_financial_ratios": "[삼성전자 재무 비율, 2025 사업보고서 연결 기준]\n■ 성장성\n  매출액: 7.14%\n■ 수익성\n  영업이익률: 10.00%",
+    "get_company_overview": "회사명: 주식회사 트위니 (Twinny)\n상장 구분: 기타 (비상장)\n대표자: 천영석, 천홍석\n설립일: 2015-09-01",
+    "get_recent_disclosures": "[트위니 최근 1095일 DART 공시]\n2026-03-31 | 감사보고서 (2025.12) | 트위니 | "
+                              "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260331001204",
+    "search_company_docs": "[문서 풀 검색: 기업 자료 · 트위니 / '제품']\n나르고 오더피킹 최고 속도 1.5 m/s, 적재 100 kg. "
+                           "3D LiDAR와 2D LiDAR 2개로 360° 장애물 감지. 2026-09 프리IPO 144억원 유치.\n[출처]\n"
+                           "- 트위니 공식 자료 · 트위니 로봇 제품 소개서 — https://twinny.ai/brochure.pdf",
+    "search_industry_docs": "[문서 풀 검색: 산업 자료 / '물류 로봇 시장']\n2024년 운송·물류 서비스 로봇 판매 102,900대(+14%). "
+                            "글로벌 물류 로봇 2025년 177억 달러 → 2035년 870억 달러.\n[출처]\n"
+                            "- IFR · World Robotics 2025 – Service Robots — https://ifr.org/service",
+    "get_audit_financials": "[트위니 연결감사보고서 (2025.12)] (원본 표: 숫자·단위를 수정하지 말고 그대로 인용)\n"
+                            "원문: https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260331001209\n\n"
+                            "| 계정 | 2025 | 2024 |\n|---|---:|---:|\n| 매출액 | 50억 | 12억 |\n| 자본총계 | -546억 | -419억 |\n\n"
+                            "■ 투자 판단 지표 (Python 계산)\n  매출 성장률: 316.1%\n  자본잠식: 완전자본잠식 (자본총계 < 0)",
+    "search_audit_report": "[트위니 연결감사보고서 (2025.12) 검색: '상환전환우선주'] 원문: https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260331001209\n"
+                           "당사가 발행한 복합금융상품은 보유자의 선택에 의해 보통주로 전환 또는 상환될 수 있는 상환전환우선주입니다.",
 }
 
 
@@ -52,13 +59,19 @@ def harness(monkeypatch, tmp_path):
     """script를 채워 넣으면 그에 따라 움직이는 가짜 LLM 환경."""
     monkeypatch.setattr(config, "RUN_DIR", tmp_path / "runs")
     monkeypatch.setattr(config, "REPORT_DIR", tmp_path / "reports")
+    monkeypatch.setattr(config, "MAX_PDF_PAGES", 50)  # 가짜 보고서는 쪽수 검사 대상이 아님
     script = {"calls": {}, "counts": defaultdict(int), "structured": {}, "text": [], "log": []}
 
     from finance_agent import llm
     from finance_agent.agents import _react, workers
 
     def fake_build(prompt, tools, max_tool_rounds=8):
-        name = "researcher" if "리서처" in prompt else "analyst"
+        if "시장 리서처" in prompt:
+            name = "market_researcher"
+        elif "심사역" in prompt:
+            name = "investment_analyst"
+        else:
+            name = "researcher"
         return FakeAgent(name, script)
 
     monkeypatch.setattr(_react, "build_react_agent", fake_build)

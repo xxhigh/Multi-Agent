@@ -1,4 +1,4 @@
-"""재무 분석 agent HTTP API.
+"""로보틱스 스타트업 투자 평가 agent HTTP API.
 
 실행 (프로젝트 루트에서):
     uvicorn backend.app:app --reload --port 8000
@@ -33,7 +33,7 @@ TOOL_RESULT_PREVIEW = 300
 
 log = logging.getLogger("uvicorn.error")
 
-app = FastAPI(title="Finance Agent API")
+app = FastAPI(title="Robotics Startup Investment Agent API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000").split(","),
@@ -73,7 +73,7 @@ def _events(question: str, thread_id: str):
             for node, data in update.items():
                 if not data:
                     continue
-                if namespace:  # researcher/analyst ReAct 서브그래프 내부
+                if namespace:  # 하위 에이전트(ReAct) 서브그래프 내부
                     agent = namespace[0].split(":")[0]
                     msgs = data.get("messages") or []
                     if node == "agent" and msgs and msgs[-1].tool_calls:

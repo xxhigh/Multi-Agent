@@ -7,7 +7,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { getReport, listReports, streamAnalyze, type ReportMeta } from "@/lib/api";
 import { applyEvent, newRun, type Run } from "@/lib/run";
 
-const EXAMPLES = ["삼성전자 재무 분석해줘", "SK하이닉스와 삼성전자 수익성 비교", "네이버 최근 공시 요약", "현대차 작년 매출은?"];
+const EXAMPLES = ["트위니 투자 가능성 평가해줘", "뉴빌리티 투자 가능성 평가해줘", "에이딘로보틱스 투자 가능성 평가해줘"];
 
 export default function Home() {
   const [runs, setRuns] = useState<Run[]>([]);
@@ -124,7 +124,7 @@ export default function Home() {
           <button className="btn-ghost md:hidden" onClick={() => setMenuOpen(true)} aria-label="메뉴 열기">
             ☰
           </button>
-          <h1 className="font-semibold tracking-tight">재무 분석 에이전트</h1>
+          <h1 className="font-semibold tracking-tight">로보틱스 스타트업 투자 평가 에이전트</h1>
           <span className="hidden text-xs text-muted sm:inline">DART 공시 · 사업보고서 RAG · 멀티 에이전트</span>
         </header>
 
@@ -141,7 +141,7 @@ export default function Home() {
               <div className="pt-[12vh] text-center">
                 <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">어떤 기업을 분석할까요?</h2>
                 <p className="mt-3 text-sm text-muted">
-                  국내 상장사 이름을 입력하면 Researcher · Analyst · Writer 에이전트가 협업해 리포트를 작성해요.
+                  DART 등록 로보틱스 기업 이름을 입력하면 Supervisor가 Researcher · Market · Investment · Writer · Evaluator를 지휘해 투자 평가 보고서를 작성해요.
                 </p>
                 <div className="mt-8 flex flex-wrap justify-center gap-2">
                   {EXAMPLES.map((ex) => (
@@ -169,7 +169,7 @@ export default function Home() {
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder={runs.length ? "후속 질문을 입력하세요 (예: 배당은 어때?)" : "예: 카카오 재무 분석해줘"}
+              placeholder={runs.length ? "다른 기업을 입력하세요" : "예: 트위니 투자 가능성 평가해줘"}
               maxLength={500}
               className="min-w-0 flex-1 rounded-xl border border-line bg-surface px-4 py-2.5 outline-none focus:ring-2 focus:ring-accent/40"
             />

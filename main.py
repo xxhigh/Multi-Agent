@@ -1,8 +1,8 @@
-"""재무 분석 Supervisor 멀티 에이전트 CLI.
+"""로보틱스 스타트업 투자 평가 Supervisor 멀티 에이전트 CLI.
 
 사용법:
     python main.py                          # 대화형 모드
-    python main.py "셀트리온 재무 분석해줘"    # 단일 질문
+    python main.py "트위니 투자 가능성 평가해줘"    # 단일 질문
 
 산출물:
     outputs/reports/report_{trace_id}.md          최종 보고서
@@ -29,7 +29,7 @@ def run(graph, question: str) -> None:
         for node, data in update.items():
             if not data:
                 continue
-            if namespace:  # researcher/analyst 내부의 도구 호출 표시
+            if namespace:  # 하위 에이전트 내부의 도구 호출 표시
                 msgs = data.get("messages") or []
                 if node == "agent" and msgs and msgs[-1].tool_calls:
                     for call in msgs[-1].tool_calls:
@@ -61,7 +61,7 @@ def main() -> None:
         run(graph, " ".join(sys.argv[1:]))
         return
 
-    print("💰 재무 분석 agent (종료: exit)")
+    print("🤖 로보틱스 스타트업 투자 평가 agent (종료: exit)")
     while True:
         try:
             q = input("\n질문> ").strip()

@@ -1,4 +1,4 @@
-"""Researcher · Analyst 노드.
+"""하위 에이전트 노드: researcher · market_researcher · investment_analyst.
 
 - 각자 ReAct 서브그래프로 도구를 쓰고, 끝나면 supervisor로만 돌아간다 (하위 에이전트 간 직접 통신 없음).
 - 도구 원문은 근거 파일로 저장하고 State에는 EvidenceRef만 올린다 (지속성 비용 통제).
@@ -10,14 +10,15 @@ from pydantic import BaseModel, Field
 
 from .. import config, llm
 from ..observability import load_evidence, log_decision, save_evidence
-from ..prompts import ANALYST_PROMPT, RESEARCHER_PROMPT, STRUCTURING_PROMPT
+from ..prompts import INVESTMENT_PROMPT, MARKET_PROMPT, RESEARCHER_PROMPT, STRUCTURING_PROMPT
 from ..state import EvidenceRef, FinanceState, PerspectiveKey, PerspectiveResult
-from ..tools import ANALYST_TOOLS, EVIDENCE_TYPE_BY_TOOL, RESEARCH_TOOLS
-from . import _react
+from ..tools import EVIDENCE_TYPE_BY_TOOL, INVESTMENT_TOOLS, MARKET_TOOLS, RESEARCHER_TOOLS
+from . import _react, scorecard
 
 WORKER_SPECS = {
-    "researcher": (RESEARCHER_PROMPT, RESEARCH_TOOLS),
-    "analyst": (ANALYST_PROMPT, ANALYST_TOOLS),
+    "researcher": (RESEARCHER_PROMPT, RESEARCHER_TOOLS),
+    "market_researcher": (MARKET_PROMPT, MARKET_TOOLS),
+    "investment_analyst": (INVESTMENT_PROMPT, INVESTMENT_TOOLS),
 }
 _EXCERPT = 1200          # 하위 에이전트에게 넘기는 근거 발췌 길이
 _MAX_FINDINGS = 1500     # 관점별 findings 최대 길이 (State 증식 방지)
@@ -65,11 +66,15 @@ def render_worker_input(state: FinanceState, name: str, targets: list[str]) -> s
             lines.append(f"  · 지금까지 정리된 내용(보강할 것): {prev.findings[:500]}")
 
     evidence = state.get("evidence") or []
-    if evidence and name == "analyst":
-        # analyst는 researcher가 모은 시세·재무제표를 해석해야 하므로 원문 발췌를 함께 준다
-        lines += ["", "참고 근거 발췌 (researcher 수집):"]
+    if evidence and name == "investment_analyst":
+        # 투자 평가는 회사·기술·시장 결과를 함께 봐야 하므로 다른 팀원이 정리한 내용을 요약해 준다
+        lines += ["", "다른 팀원이 정리한 관점 (참고):"]
+        for key, p in persp.items():
+            if key != "investment" and p and p.findings:
+                lines.append(f"- {config.PERSPECTIVES[key]['title']}: {p.findings[:400]}")
+        lines += ["", "참고 근거 발췌:"]
         for e in evidence:
-            if e.type in ("price", "statements", "overview"):
+            if e.type in ("overview", "disclosure"):
                 lines.append(f"[{e.id}] {load_evidence(e.path, _EXCERPT)}")
     return "\n".join(lines)
 
@@ -79,7 +84,7 @@ def _merge(prev: PerspectiveResult | None, new: PerspectiveFinding, name: str,
     ids = [i for i in new.evidence_ids if i in valid_ids]
     findings = new.findings.strip()
     if prev and prev.findings and prev.written_by != name and findings:
-        # 다른 담당자가 같은 관점에 보탠 내용은 합친다 (예: researcher 시세 + analyst 지표)
+        # 다른 담당자가 같은 관점에 보탠 내용은 합친다 (예: researcher 회사 자료 + market_researcher 경쟁 정보)
         findings = f"{prev.findings}\n{findings}"
         ids = list(dict.fromkeys(prev.evidence_ids + ids))
     elif prev and not findings:
@@ -151,10 +156,22 @@ def make_worker_node(name: str):
                 base = prev.get(key) or PerspectiveResult(view=key)
                 updates[key] = base.model_copy(update={"gaps": [f"{name} 보고에 이 관점 내용이 없음"]})
 
+        out = {}
+        if name == "investment_analyst":
+            # 투자 평가 스코어카드: 모든 관점 결과를 보고 항목별 점수를 매긴다 (가중합은 코드)
+            try:
+                merged = {**prev, **updates}
+                out["scorecard"] = scorecard.build(merged, _evidence_catalog(all_evidence), valid_ids)
+                log_decision(trace_id, name, "scorecard",
+                             f"종합 {out['scorecard'].total} / 반영 가중치 {out['scorecard'].covered_weight}")
+            except Exception as e:  # noqa: BLE001 — 실패하면 writer가 다시 시도
+                tool_errors.append(f"scorecard: {e}")
+
         status = "ok" if not tool_errors else "partial"
         log_decision(trace_id, name, status, f"근거 {len(new_refs)}건 수집, 관점 {list(updates)} 갱신",
                      tool_errors=tool_errors[:5])
         return {
+            **out,
             "perspectives": updates,
             "evidence": new_refs,
             "node_status": {name: status},

@@ -18,13 +18,10 @@ from .writer import CITATION, DISCLAIMER
 
 # 중립성: 우열 판정·투자 권유 표현 (면책 문구 줄은 검사에서 제외)
 BANNED = ("매수", "매도", "추천", "유망", "저평가", "고평가", "목표주가", "투자 권유", "투자를 권",
-          "보다 우위", "보다 우월", "열위")
+          "투자해야", "투자하지 말", "투자 적격", "투자 부적격", "보다 우위", "보다 우월", "열위")
 SECTION_TITLES = {
     "SUMMARY": "SUMMARY",
-    "business_tech": "1. 사업·기술 경쟁력",
-    "market": "2. 성장성·시장 평가",
-    "stakeholder": "3. 주주·지배구조·공시",
-    "financial_health": "4. 재무 건전성·산업 특성",
+    **{k: v["title"] for k, v in config.PERSPECTIVES.items()},
     "REFERENCE": "REFERENCE",
 }
 MIN_SECTION_CHARS = 80
@@ -60,6 +57,23 @@ def _find_section(sections: dict[str, str], title: str) -> str | None:
     return None
 
 
+def pdf_pages(report: str) -> int | None:
+    """제출용 PDF로 렌더링했을 때의 쪽수 (제출 조건: 최대 10장). 변환기가 없으면 None."""
+    try:
+        import tempfile
+        from pathlib import Path
+
+        import pymupdf
+
+        from ..pdf_export import markdown_to_pdf
+        with tempfile.TemporaryDirectory() as d:
+            path = markdown_to_pdf(report, Path(d) / "check.pdf")
+            with pymupdf.open(str(path)) as doc:
+                return doc.page_count
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def rule_check(report: str, evidence: list[EvidenceRef], perspectives: dict) -> dict[str, CriterionResult]:
     by_id = {e.id: e for e in evidence}
     sections = split_sections(report)
@@ -73,6 +87,9 @@ def rule_check(report: str, evidence: list[EvidenceRef], perspectives: dict) -> 
             cov.append(f"필수 절 '{title}' 없음")
         elif key not in ("REFERENCE",) and len(body.strip()) < MIN_SECTION_CHARS:
             cov.append(f"'{title}' 내용이 너무 짧음({len(body.strip())}자)")
+    pages = pdf_pages(report) if not cov else None
+    if pages is not None and pages > config.MAX_PDF_PAGES:
+        cov.append(f"PDF {pages}장 — 제출 상한 {config.MAX_PDF_PAGES}장 초과, 본문을 줄일 것")
 
     # 근거성: 인용 존재·유효성, 관점 절마다 인용
     gr = []

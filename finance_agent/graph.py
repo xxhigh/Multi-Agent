@@ -1,10 +1,10 @@
 """Supervisor 기반 멀티 에이전트 그래프.
 
-                 ┌──────────────── supervisor ─────────────────┐
-     add_conditional_edges(route_after_supervisor: State.next 기준)
-        │            │            │             │              │
-   researcher     analyst      writer       evaluator        END
-        └────────────┴────────────┴─────────────┴──▶ supervisor (항상 복귀)
+                    ┌──────────────────── supervisor ────────────────────┐
+        add_conditional_edges(route_after_supervisor: State.next 기준)
+        │               │                  │             │          │        │
+   researcher   market_researcher   investment_analyst   writer   evaluator   END
+        └───────────────┴──────────────────┴─────────────┴──────────┴──▶ supervisor (항상 복귀)
 
 - 하위 에이전트끼리는 엣지가 없다 → 모든 통신은 supervisor를 거친다.
 - 순서는 코드에 없다. supervisor가 State(관점별 충분성·평가 결과·상한)를 보고 next를 정하면
@@ -22,8 +22,7 @@ from .state import FinanceState
 from .supervisor import supervisor_node
 
 ROUTES = {
-    "researcher": "researcher",
-    "analyst": "analyst",
+    **{name: name for name in config.WORKERS},
     "writer": "writer",
     "evaluator": "evaluator",
     "end": END,

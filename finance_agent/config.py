@@ -18,38 +18,47 @@ MAX_REVISIONS = 2       # 품질 평가 미달 시 보고서 수정·재조사 �
 MAX_TOOL_ROUNDS = 8     # 하위 에이전트(ReAct) 1회 실행 안 도구 호출 상한
 RECURSION_LIMIT = 80    # LangGraph 자체 안전망 (위 상한이 먼저 걸리도록 넉넉히)
 
-# ── 보고서 관점 (과제 노션 4관점 ↔ 재무 분석 매핑) ───────────
-# key: (보고서 제목, 노션 관점명, 작성 담당, 충분성 판정에 필요한 근거 종류)
+DOCS_DIR = Path(os.getenv("FINANCE_AGENT_DOCS_DIR", ROOT_DIR / "data" / "docs"))
+MAX_PDF_PAGES = 10      # 제출 조건: 평가 보고서 최대 10장
+
+# ── 보고서 관점 (지난 RAG 과제 목차와 동일) ─────────────────────
+# key: (보고서 절 제목, 작성 담당, 충분성 판정에 필요한 근거 종류, 작성 가이드)
 PERSPECTIVES: dict[str, dict] = {
-    "business_tech": {
-        "title": "사업·기술 경쟁력",
-        "notion_view": "기술 성숙도",
+    "company_team": {
+        "title": "COMPANY & TEAM",
         "owner": "researcher",
-        "required": ("dart_report",),
-        "guide": "사업 구조, 주요 제품·서비스, 부문별 매출 비중, 연구개발 현황",
+        "required": ("overview", "company_doc"),
+        "guide": "설립·소재지·대표자(창업자), 조직·인증, 투자 유치 이력(공시의 유상증자 포함), 상장 준비 상태",
+    },
+    "technology": {
+        "title": "TECHNOLOGY",
+        "owner": "researcher",
+        "required": ("company_doc",),
+        "guide": "제품 라인업, 핵심 기술(센서·자율주행·안전 인증), 사양 수치, 연구개발 체계, 기술의 검증 수준(자사 주장 vs 외부 검증)",
     },
     "market": {
-        "title": "성장성·시장 평가",
-        "notion_view": "시장성",
-        "owner": "analyst",
-        "required": ("price", "ratios"),
-        "guide": "매출·이익 성장률, 주가 흐름, 시가총액·PER·PBR 등 시장 평가 지표",
+        "title": "MARKET",
+        "owner": "market_researcher",
+        "required": ("industry_doc",),
+        "guide": "대상 시장(물류·제조 로봇 등)의 규모·성장률, 수요 동인, 비즈니스 모델(RaaS 등), 경쟁 구도, 대상 기업의 시장 내 위치",
     },
-    "stakeholder": {
-        "title": "주주·지배구조·공시",
-        "notion_view": "이해관계자",
-        "owner": "researcher",
-        "required": ("disclosure", "overview"),
-        "guide": "최근 주요 공시(실적·투자·자금조달·지배구조), 배당, 대표자·시장 구분 등 이해관계자 관련 정보",
-    },
-    "financial_health": {
-        "title": "재무 건전성·산업 특성",
-        "notion_view": "도메인 적용",
-        "owner": "analyst",
-        "required": ("ratios", "statements"),
-        "guide": "수익성·안정성·현금흐름 지표와 업종 특성(예: 금융사는 ROE·PBR 중심)을 반영한 해석",
+    "investment": {
+        "title": "INVESTMENT ASSESSMENT & RISKS",
+        "owner": "investment_analyst",
+        "required": ("financials", "audit_notes"),
+        "guide": "매출·손익 추세, 자본잠식·현금 소진 기간, 투자조건(상환전환우선주 등), 계속기업 불확실성, 핵심 리스크",
     },
 }
 PERSPECTIVE_KEYS = tuple(PERSPECTIVES)
 
-WORKERS = ("researcher", "analyst")
+WORKERS = ("researcher", "market_researcher", "investment_analyst")
+
+# ── 투자 평가 스코어카드 (지난 RAG 과제 가중치, 합계 100) ─────────
+SCORECARD: dict[str, dict] = {
+    "founder": {"label": "창업자", "weight": 5},
+    "market": {"label": "시장성", "weight": 30},
+    "product_tech": {"label": "제품·기술력", "weight": 25},
+    "competitive_edge": {"label": "경쟁 우위", "weight": 20},
+    "traction": {"label": "실적", "weight": 10},
+    "deal_terms": {"label": "투자조건", "weight": 10},
+}

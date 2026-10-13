@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "재무 분석 에이전트",
-  description: "DART 공시와 사업보고서를 기반으로 국내 상장사 재무 리포트를 작성하는 멀티 에이전트",
+  title: "로보틱스 스타트업 투자 평가 에이전트",
+  description: "DART 감사보고서·공시와 산업 자료로 Physical AI·로보틱스 스타트업 투자 가능성을 평가하는 Supervisor 멀티 에이전트",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

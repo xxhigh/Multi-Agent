@@ -1,6 +1,6 @@
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-export type Agent = "supervisor" | "researcher" | "analyst" | "writer" | "evaluator";
+export type Agent = "supervisor" | "researcher" | "market_researcher" | "investment_analyst" | "writer" | "evaluator";
 
 export type AgentEvent =
   | { type: "start"; thread_id: string }

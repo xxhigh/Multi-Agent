@@ -5,7 +5,7 @@
    관점별 충분성 플래그만 보고 결정한다.
 2. 관측성 위치      : 라우팅 결정·사유 로그는 State에 넣지 않는다.
                        observability.log_decision()이 outputs/runs/{trace_id}/decisions.jsonl에 적재한다.
-3. 지속성 비용      : 도구 원문(재무제표 표, 사업보고서 발췌 등)은 파일로 저장하고 State에는
+3. 지속성 비용      : 도구 원문(감사보고서 재무표, 문서 발췌 등)은 파일로 저장하고 State에는
                        EvidenceRef(ID·종류·제목·경로)만 둔다. messages는 사용자 질문과 최종 보고서만 담는다.
 4. 상관            : trace_id 하나로 State ↔ 결정 로그 ↔ 근거 파일 ↔ LangSmith(run metadata)를 잇는다.
 5. 재개/복구        : checkpointer + node_status + last_error + attempts 로 중단 지점부터 재개·재시도 판단.
@@ -19,9 +19,11 @@ from typing import Annotated, Literal
 from langgraph.graph import MessagesState
 from pydantic import BaseModel, Field
 
-PerspectiveKey = Literal["business_tech", "market", "stakeholder", "financial_health"]
-WorkerName = Literal["researcher", "analyst"]
-NextNode = Literal["researcher", "analyst", "writer", "evaluator", "FINISH", "FINISH_WARNING"]
+PerspectiveKey = Literal["company_team", "technology", "market", "investment"]
+WorkerName = Literal["researcher", "market_researcher", "investment_analyst"]
+NextNode = Literal["researcher", "market_researcher", "investment_analyst", "writer", "evaluator",
+                   "FINISH", "FINISH_WARNING"]
+ScoreKey = Literal["founder", "market", "product_tech", "competitive_edge", "traction", "deal_terms"]
 
 
 def merge_dict(left: dict | None, right: dict | None) -> dict:
@@ -36,7 +38,7 @@ class EvidenceRef(BaseModel):
     """근거 1건의 '참조'. 원문은 path 파일에 있고 State에는 이 메타데이터만 남긴다."""
 
     id: str                     # E1, E2, ... (보고서 인용 키)
-    type: str                   # dart_report | statements | overview | disclosure | price | ratios
+    type: str                   # overview | disclosure | company_doc | industry_doc | financials | audit_notes
     provider: str               # 출처 기관 (편향 통제 검사용)
     tool: str
     title: str
@@ -58,6 +60,23 @@ class PerspectiveResult(BaseModel):
     limited: bool = False                       # 재작업 한도 소진 → 보고서에 한계로 명시
 
 
+class ScoreItem(BaseModel):
+    key: str                                    # ScoreKey
+    label: str
+    weight: int
+    score: int | None = None                    # 1~5, 근거 부족이면 None(결측)
+    rationale: str = ""
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class Scorecard(BaseModel):
+    """투자 평가 스코어카드. LLM은 항목별 1~5점과 근거만 매기고, 가중합은 코드가 계산한다."""
+
+    items: list[ScoreItem]
+    total: float | None = None                  # 결측 제외 항목 가중 평균을 100점으로 환산
+    covered_weight: int = 0                     # 점수가 매겨진 항목의 가중치 합 (최대 100)
+
+
 class CriterionResult(BaseModel):
     passed: bool
     issues: list[str] = Field(default_factory=list)
@@ -72,7 +91,7 @@ class EvalVerdict(BaseModel):
     bias_control: CriterionResult
     coverage: CriterionResult
     judge_used: bool                            # 규칙 검사 통과 시에만 LLM Judge 실행
-    fix_target: Literal["writer", "researcher", "analyst"] | None = None
+    fix_target: Literal["writer", "researcher", "market_researcher", "investment_analyst"] | None = None
     rework_perspectives: list[str] = Field(default_factory=list)
     feedback: str = ""
 
@@ -86,6 +105,7 @@ class FinanceState(MessagesState):
     company: str
     perspectives: Annotated[dict[str, PerspectiveResult], merge_dict]
     evidence: Annotated[list[EvidenceRef], operator.add]
+    scorecard: Scorecard | None                 # investment_analyst가 작성, writer가 표로 삽입
     report: str | None
     eval_result: EvalVerdict | None
 

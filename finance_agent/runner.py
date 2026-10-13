@@ -16,6 +16,7 @@ def initial_state(question: str, trace_id: str) -> dict:
         "company": "",
         "perspectives": {},
         "evidence": [],
+        "scorecard": None,
         "report": None,
         "eval_result": None,
         "trace_id": trace_id,

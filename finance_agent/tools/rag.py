@@ -142,25 +142,6 @@ def latest_annual_report(corp: dart.Corp) -> tuple[str, int]:
     return rows[0]["rcept_no"], year
 
 
-def _collection(rcept_no: str, corp: dart.Corp, year: int):
-    """보고서 인덱스를 가져오고, 없으면 만든다."""
-    col = _client().get_or_create_collection(f"dart-{rcept_no}", metadata={"hnsw:space": "cosine"})
-    with _index_lock:
-        if col.count() > 0:
-            return col
-        docs, metas = [], []
-        for path, text in parse_sections(_download_report(rcept_no)):
-            for chunk in _chunk(text):
-                docs.append(f"[{path}]\n{chunk}")
-                metas.append({"section": path, "company": corp.name, "year": year})
-        if not docs:
-            raise dart.DartError(f"{corp.name} 사업보고서에서 분석할 본문을 찾지 못했습니다.")
-        vectors = _embeddings().embed_documents(docs)
-        col.add(ids=[f"{rcept_no}-{i}" for i in range(len(docs))], documents=docs,
-                embeddings=vectors, metadatas=metas)
-    return col
-
-
 def _bigrams(text: str) -> set[str]:
     """공백 제거 후 2글자 단위 조각. 조사·띄어쓰기 차이에 강한 한국어 키워드 매칭용."""
     s = re.sub(r"[^\w]", "", text.lower())
@@ -176,19 +157,49 @@ KEYWORD_WEIGHT = 0.5
 CANDIDATES = 30
 
 
+def hybrid_search(name: str, build, query: str, k: int = 5) -> list[tuple[float, str, dict]]:
+    """공용 하이브리드 검색: 벡터 후보 30개 → 한국어 bigram 키워드 점수로 재정렬.
+
+    name: Chroma 컬렉션 이름 (원문이 바뀌면 이름도 바뀌게 만든다 → 자동 재인덱싱)
+    build: 인덱스가 비어 있을 때 호출, [(본문, 메타데이터)] 반환
+    """
+    col = _client().get_or_create_collection(name, metadata={"hnsw:space": "cosine"})
+    with _index_lock:
+        if col.count() == 0:
+            items = build()
+            if not items:
+                raise dart.DartError("검색할 본문을 찾지 못했습니다.")
+            docs = [d for d, _ in items]
+            vectors = _embeddings().embed_documents(docs)
+            col.add(ids=[f"{name}-{i}" for i in range(len(docs))], documents=docs,
+                    embeddings=vectors, metadatas=[m for _, m in items])
+    res = col.query(query_embeddings=[_embeddings().embed_query(query)],
+                    n_results=min(CANDIDATES, col.count()), include=["documents", "distances", "metadatas"])
+    scored = sorted(
+        (((1 - dist) + KEYWORD_WEIGHT * _keyword_score(query, doc)), doc, meta)
+        for doc, dist, meta in zip(res["documents"][0], res["distances"][0], res["metadatas"][0])
+    )
+    return scored[::-1][:k]
+
+
+def chunk_sections(sections: list[tuple[str, str]], meta: dict) -> list[tuple[str, dict]]:
+    out = []
+    for path, text in sections:
+        for chunk in _chunk(text):
+            out.append((f"[{path}]\n{chunk}", {**meta, "section": path}))
+    return out
+
+
 def search(company: str, query: str, k: int = 5) -> str:
-    """하이브리드 검색: 벡터 유사도로 후보를 넉넉히 뽑은 뒤 키워드 일치도를 더해 재정렬."""
+    """상장사 사업보고서 하이브리드 검색."""
     corp = dart.resolve_corp(company)
     rcept_no, year = latest_annual_report(corp)
-    col = _collection(rcept_no, corp, year)
-    res = col.query(query_embeddings=[_embeddings().embed_query(query)],
-                    n_results=min(CANDIDATES, col.count()))
-    scored = sorted(
-        ((1 - dist) + KEYWORD_WEIGHT * _keyword_score(query, doc), doc)
-        for doc, dist in zip(res["documents"][0], res["distances"][0])
-    )[::-1][:k]
+    hits = hybrid_search(f"dart-{rcept_no}",
+                         lambda: chunk_sections(parse_sections(_download_report(rcept_no)),
+                                                {"company": corp.name, "year": year}),
+                         query, k)
     lines = [f"[{corp.name} {year} 사업보고서 검색: '{query}'] "
              f"원문: https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}"]
-    for i, (score, doc) in enumerate(scored, 1):
+    for i, (score, doc, _) in enumerate(hits, 1):
         lines.append(f"\n--- 결과 {i} (점수 {score:.2f}) ---\n{doc}")
     return "\n".join(lines)

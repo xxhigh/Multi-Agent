@@ -65,16 +65,35 @@ def save_evidence(trace_id: str, evidence_id: str, ev_type: str, tool: str, cont
     first_line = content.strip().splitlines()[0] if content.strip() else tool
     title = first_line.strip("[] ").split("]")[0][:120]
     url_match = _DART_URL.search(content)
+    sources = doc_sources(content)
+    if sources:  # 문서 풀 검색 결과: 실제로 검색된 문서를 제목·링크로 쓴다
+        title = sources[0][0] + (f" 외 {len(sources) - 1}건" if len(sources) > 1 else "")
+        url_match = None
+        first_url = next((u for _, u in sources if u), None)
     return {
         "id": evidence_id,
         "type": ev_type,
         "provider": PROVIDER_BY_TYPE.get(ev_type, ev_type),
         "tool": tool,
         "title": title,
-        "url": url_match.group(0) if url_match else None,
+        "url": url_match.group(0) if url_match else (first_url if sources else None),
         "path": str(path),
         "collected_by": collected_by,
     }
+
+
+def doc_sources(content: str) -> list[tuple[str, str | None]]:
+    """문서 풀 검색 결과 끝의 '[출처]' 목록 → [(설명, URL)]."""
+    if "\n[출처]" not in content:
+        return []
+    out = []
+    for line in content.split("\n[출처]", 1)[1].splitlines():
+        line = line.strip()
+        if not line.startswith("- "):
+            continue
+        desc, _, url = line[2:].partition(" — ")
+        out.append((desc.strip(), url.strip() or None))
+    return out
 
 
 def load_evidence(path: str, limit: int | None = None) -> str:

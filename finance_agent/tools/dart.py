@@ -20,7 +20,7 @@ from pathlib import Path
 
 BASE_URL = "https://opendart.fss.or.kr/api"
 CACHE_DIR = Path(__file__).resolve().parents[2] / ".cache"
-CORP_CACHE = CACHE_DIR / "corp_codes.json"
+CORP_CACHE = CACHE_DIR / "corp_codes_all.json"   # 상장·비상장 전체 (약 12만 개)
 CORP_CACHE_TTL = 7 * 24 * 3600
 
 # 자주 쓰는 약칭 → DART 정식 회사명
@@ -74,8 +74,8 @@ def _get_json(path: str, **params) -> dict:
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
-def _listed_corps() -> list[Corp]:
-    """상장사(종목코드가 있는 기업) 목록."""
+def _all_corps() -> list[Corp]:
+    """DART에 등록된 전체 기업 목록 (비상장 외부감사 대상 스타트업 포함)."""
     if CORP_CACHE.exists() and time.time() - CORP_CACHE.stat().st_mtime < CORP_CACHE_TTL:
         rows = json.loads(CORP_CACHE.read_text(encoding="utf-8"))
     else:
@@ -86,7 +86,6 @@ def _listed_corps() -> list[Corp]:
              "stock_code": (e.findtext("stock_code") or "").strip()}
             for e in root.iter("list")
         ]
-        rows = [r for r in rows if r["stock_code"]]
         CACHE_DIR.mkdir(exist_ok=True)
         CORP_CACHE.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
     return [Corp(**r) for r in rows]
@@ -97,18 +96,18 @@ def _normalize(name: str) -> str:
 
 
 def search_corps(query: str, limit: int = 10) -> list[Corp]:
-    """회사명 또는 6자리 종목코드로 상장사를 검색. 정확히 일치하는 항목이 맨 앞."""
+    """회사명 또는 6자리 종목코드로 기업을 검색 (비상장 포함). 정확히 일치하는 항목이 맨 앞."""
     q = query.strip()
     code = re.search(r"\b(\d{6})\b", q)  # '현대자동차(005380)' 같은 입력 처리
     if code:
         q = code.group(1)
-    corps = _listed_corps()
+    corps = _all_corps()
     if q.isdigit():
         return [c for c in corps if c.stock_code == q.zfill(6)]
     nq = _normalize(q)
     exact = [c for c in corps if _normalize(c.name) == nq]
     partial = [c for c in corps if nq in _normalize(c.name) and c not in exact]
-    partial.sort(key=lambda c: len(c.name))
+    partial.sort(key=lambda c: (len(c.name), not c.stock_code))
     return (exact + partial)[:limit]
 
 
@@ -117,10 +116,10 @@ def resolve_corp(query: str) -> Corp:
     query = ALIASES.get(query.strip().replace(" ", ""), query)
     found = search_corps(query)
     if not found:
-        raise DartError(f"'{query}'에 해당하는 상장사를 찾을 수 없습니다. 정식 회사명이나 종목코드를 사용하세요.")
+        raise DartError(f"'{query}'에 해당하는 DART 등록 기업을 찾을 수 없습니다. 정식 회사명을 사용하세요.")
     if re.search(r"\b\d{6}\b", query) or _normalize(found[0].name) == _normalize(query):
         return found[0]
-    cands = ", ".join(f"{c.name}({c.stock_code})" for c in found[:8])
+    cands = ", ".join(f"{c.name}({c.stock_code or '비상장'})" for c in found[:8])
     raise DartError(f"'{query}'와 정확히 일치하는 회사가 없습니다. 후보: {cands}. "
                     "의도한 회사가 후보에 없으면 정식 회사명이나 종목코드로 다시 시도하세요.")
 
@@ -166,7 +165,7 @@ def latest_report(corp_code: str) -> tuple[str, int]:
     return "annual", y - 1
 
 
-def recent_disclosures(corp_code: str, days: int = 90, limit: int = 20) -> list[dict]:
+def recent_disclosures(corp_code: str, days: int = 90, limit: int = 30) -> list[dict]:
     end = date.today()
     bgn = date.fromordinal(end.toordinal() - days)
     data = _get_json("list.json", corp_code=corp_code, bgn_de=bgn.strftime("%Y%m%d"),

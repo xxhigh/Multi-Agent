@@ -15,7 +15,7 @@ from .prompts import INTAKE_PROMPT, ROUTING_PROMPT
 from .state import FinanceState, PerspectiveKey, PerspectiveResult
 from .tools import COLLECTOR_BY_TYPE
 
-_WORKER_ORDER = ("researcher", "analyst", "writer")
+_WORKER_ORDER = (*config.WORKERS, "writer")   # 후보가 여럿일 때 기본 우선순위 (투자 평가는 마지막)
 
 
 class IntakeResult(BaseModel):
@@ -77,7 +77,7 @@ def _summary_for_llm(state: FinanceState, rule_results: dict, attempts: dict) ->
 
 
 def _perspective_guide() -> str:
-    return "\n".join(f"- {k}: {v['title']} (노션 관점 '{v['notion_view']}') — {v['guide']}"
+    return "\n".join(f"- {k}: {v['title']} (담당 {v['owner']}) — {v['guide']}"
                      for k, v in config.PERSPECTIVES.items())
 
 
@@ -107,7 +107,7 @@ def supervisor_node(state: FinanceState) -> dict:
             run_name="supervisor_intake")
         if not intake.in_scope or not intake.company.strip():
             notice = (f"요청하신 내용은 지원 범위가 아닙니다. ({intake.reason})\n"
-                      "이 에이전트는 국내 상장사 1곳의 재무·사업 분석 보고서를 작성합니다.")
+                      "이 에이전트는 DART에 등록된 국내 Physical AI·로보틱스 기업 1곳의 투자 가능성 평가 보고서를 작성합니다.")
             log_decision(trace_id, "supervisor", "FINISH", f"범위 밖 요청: {intake.reason}", step=step)
             return {**update, "next": "FINISH", "status": "out_of_scope", "report": notice,
                     "messages": [AIMessage(content=notice, name="supervisor")]}
@@ -142,7 +142,7 @@ def supervisor_node(state: FinanceState) -> dict:
                                                       f"{verdict.feedback[:200]}")}
         attempts = state.get("attempts") or {}
         rework = [k for k in verdict.rework_perspectives if attempts.get(k, 0) < config.MAX_ATTEMPTS]
-        if verdict.fix_target in ("researcher", "analyst") and rework:
+        if verdict.fix_target in config.WORKERS and rework:
             persp = state.get("perspectives") or {}
             marked = {k: (persp.get(k) or PerspectiveResult(view=k)).model_copy(update={
                 "sufficient": False, "gaps": [f"품질 평가: {verdict.feedback[:200]}"]}) for k in rework}
