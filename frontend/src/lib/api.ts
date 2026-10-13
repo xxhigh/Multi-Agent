@@ -23,7 +23,7 @@ export type AgentEvent =
       rule_checks: Record<string, boolean>;
       scores: Record<string, number>;
     }
-  | { type: "report"; content: string; name: string }
+  | { type: "report"; content: string; name: string; pdf: string | null }
   | { type: "error"; message: string }
   | { type: "done" };
 
@@ -75,4 +75,9 @@ export async function getReport(name: string): Promise<string> {
   const res = await fetch(`${API_URL}/api/reports/${encodeURIComponent(name)}`);
   if (!res.ok) throw new Error(`서버 오류 (${res.status})`);
   return (await res.json()).content;
+}
+
+/** 리포트 PDF 다운로드 주소. PDF가 아직 없으면 서버가 요청 시 생성한다. */
+export function reportPdfUrl(name: string): string {
+  return `${API_URL}/api/reports/${encodeURIComponent(name)}/pdf`;
 }

@@ -6,6 +6,7 @@
 - POST /api/analyze        : 질문을 받아 agent 진행 상황을 SSE로 스트리밍
 - GET  /api/reports        : 저장된 리포트 목록
 - GET  /api/reports/{name} : 리포트 본문
+- GET  /api/reports/{name}/pdf : 리포트 PDF 다운로드 (없으면 생성)
 """
 
 import json
@@ -21,13 +22,13 @@ load_dotenv()
 
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import StreamingResponse  # noqa: E402
+from fastapi.responses import FileResponse, StreamingResponse  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 from finance_agent import build_graph  # noqa: E402
-from finance_agent.observability import OUTPUT_DIR, log_decision, run_config  # noqa: E402
+from finance_agent.export import REPORT_DIR, save_report, to_pdf  # noqa: E402
+from finance_agent.observability import run_config  # noqa: E402
 
-REPORT_DIR = OUTPUT_DIR / "reports"
 REPORT_NAME = re.compile(r"^report_\d{8}_\d{6}\.md$")
 TOOL_RESULT_PREVIEW = 300
 
@@ -52,14 +53,6 @@ class AnalyzeRequest(BaseModel):
 
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
-def _save_report(report: str, trace_id: str) -> str:
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    path = REPORT_DIR / f"report_{datetime.now():%Y%m%d_%H%M%S}.md"
-    path.write_text(report, encoding="utf-8")
-    log_decision(trace_id, "output", "saved", path=path.name)
-    return path.name
 
 
 def _events(question: str, thread_id: str):
@@ -109,7 +102,9 @@ def _events(question: str, thread_id: str):
                                                          if isinstance(v, dict) and "score" in v}})
         report = graph.get_state(config).values.get("report")
         if report:
-            yield _sse("report", {"content": report, "name": _save_report(report, trace_id)})
+            md_path, pdf_path = save_report(report, trace_id)
+            yield _sse("report", {"content": report, "name": md_path.name,
+                                  "pdf": pdf_path.name if pdf_path else None})
     except Exception as e:  # noqa: BLE001 - 스트림 도중 오류를 클라이언트에 전달
         log.exception("analyze 실패 (thread_id=%s, trace_id=%s)", thread_id, trace_id)
         yield _sse("error", {"message": f"{type(e).__name__}: {e}"})
@@ -151,6 +146,17 @@ def get_report(name: str) -> dict:
     if not REPORT_NAME.match(name) or not path.exists():
         raise HTTPException(404, "리포트를 찾을 수 없습니다.")
     return {"name": name, "content": path.read_text(encoding="utf-8")}
+
+
+@app.get("/api/reports/{name}/pdf")
+def get_report_pdf(name: str) -> FileResponse:
+    path = REPORT_DIR / name
+    if not REPORT_NAME.match(name) or not path.exists():
+        raise HTTPException(404, "리포트를 찾을 수 없습니다.")
+    pdf = path.with_suffix(".pdf")
+    if not pdf.exists() and not to_pdf(path.read_text(encoding="utf-8"), pdf):  # 예전 리포트는 요청 시 생성
+        raise HTTPException(500, "PDF를 생성하지 못했습니다.")
+    return FileResponse(pdf, media_type="application/pdf", filename=pdf.name)
 
 
 @app.get("/api/health")

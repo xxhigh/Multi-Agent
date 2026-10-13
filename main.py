@@ -8,7 +8,6 @@
 
 import sys
 import uuid
-from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -16,17 +15,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from finance_agent import build_graph  # noqa: E402
-from finance_agent.observability import OUTPUT_DIR, langsmith_enabled, log_decision, run_config  # noqa: E402
-
-REPORT_DIR = OUTPUT_DIR / "reports"
-
-
-def save_report(report: str, trace_id: str) -> Path:
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    path = REPORT_DIR / f"report_{datetime.now():%Y%m%d_%H%M%S}.md"
-    path.write_text(report, encoding="utf-8")
-    log_decision(trace_id, "output", "saved", path=path.name)  # 리포트 파일 ↔ trace_id 연결
-    return path
+from finance_agent.export import save_report  # noqa: E402
+from finance_agent.observability import langsmith_enabled, run_config  # noqa: E402
 
 
 def run(graph, question: str, thread_id: str) -> None:
@@ -65,7 +55,9 @@ def run(graph, question: str, thread_id: str) -> None:
     report = state.get("report")
     if report:
         print("\n" + "=" * 70 + "\n" + report + "\n" + "=" * 70)
-        print(f"\n📄 리포트 저장: {save_report(report, trace_id)}")
+        md_path, pdf_path = save_report(report, trace_id)
+        print(f"\n📄 리포트 저장: {md_path}")
+        print(f"📕 PDF 저장: {pdf_path}" if pdf_path else "⚠ PDF 생성 실패 (playwright install chromium 확인)")
 
 
 def main() -> None:

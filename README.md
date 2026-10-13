@@ -13,7 +13,7 @@
   - 질문 유형에 따라 경로가 달라집니다. 분석 요청은 `researcher → analyst → writer`, 단순 질문은 `researcher → writer`, 범위 밖 요청은 `writer`(안내)로 바로 갑니다.
   - 필수 관점이 비어 있으면 writer로 가지 않고 담당 에이전트에게 **재작업**을 지시합니다.
   - 품질 평가에서 미달이면 Supervisor로 돌아갑니다. 서술 문제는 writer가 **재작성**하고, 근거 부족은 researcher/analyst가 **재수집**합니다.
-  - 같은 질문도 수집 결과에 따라 경로가 달라집니다([Example](#example-셀트리온)). 셀트리온 분석은 한 번은 Supervisor 5회 결정에 researcher 재작업 2회로 끝났고, 다른 실행에서는 평가 미달로 writer 재작성 Loop가 2회 돌았습니다. 단순 질문(현대차 작년 매출)은 Supervisor 2회 결정으로 끝났습니다.
+  - 같은 질문도 수집 결과에 따라 경로가 달라집니다([Example](#example-셀트리온)). 셀트리온 분석은 재작업 없이 Supervisor 3회 결정으로 끝난 실행도 있었고, researcher 재작업 2회가 일어난 실행, 평가 미달로 writer 재작성 Loop가 2회 돈 실행도 있었습니다. 단순 질문(현대차 작년 매출)은 Supervisor 2회 결정으로 끝났습니다.
 
 ## Selected Targets & Data
 이 프로젝트의 평가 대상은 "기술"이 아니라 **국내 상장사**입니다. 관점별 근거를 서로 다른 출처에서 확보하도록 데이터 소스를 골랐습니다.
@@ -40,6 +40,7 @@
   | 편향 통제 | 제공처 2종↑, 출처 3개↑ 인용, 리스크 섹션 존재 | 강점·리스크 균형, 단일 출처 의존 여부 |
 
   - 규칙과 Judge를 **모두 통과해야 pass**입니다. 미달이면 피드백(`rule_issues`, `fix_target`)을 State에 남기고 Supervisor로 Loop합니다. 수정 한도(2회)에 도달하면 경고를 붙여 종료합니다.
+- **리포트 PDF 출력**: 리포트를 `.md`와 `.pdf`(A4, 페이지 번호 포함)로 함께 저장합니다. Markdown → HTML(markdown-it-py) → Chromium 인쇄(Playwright) 방식이라 한글과 표가 화면과 같게 나옵니다. 웹 UI에서는 답변을 Markdown으로 보여주고 **.md / PDF 다운로드** 버튼을 제공합니다.
 - **실시간 진행 상황**: FastAPI SSE(`route`, `tool_call`, `worker_done`, `evaluation`, `report`)와 Next.js UI로 라우팅 사유, 규칙 가드 개입, 평가 점수를 실시간으로 표시합니다.
 
 ## Tech Stack
@@ -53,6 +54,7 @@
 | Data | OpenDART API, yfinance |
 | Observability | LangSmith Tracing, JSONL 결정 로그 (`outputs/logs/decisions.jsonl`) |
 | Serving | FastAPI + SSE, Next.js 16 / React 19 / Tailwind CSS 4 |
+| Report Export | markdown-it-py + Playwright(Chromium) → PDF |
 
 ## Agents
 - **Supervisor** ([supervisor.py](finance_agent/supervisor.py)): 조정 계층
@@ -129,24 +131,72 @@ prepare → supervisor ──(add_conditional_edges: State["next"])──┬─�
 
 ## LangSmith Tracing
 - `.env`에 `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`를 설정하면 실행이 `finance-supervisor` run으로 기록됩니다. 각 실행의 `trace_id`는 CLI 첫 줄에 출력되고, 같은 값이 JSONL 로그에도 남습니다.
-- 트레이스 캡처: `docs/images/tracing-1.png`, `tracing-2.png`, … (경로가 길면 순서대로 나눠 제출합니다)
+
+**① Traces 목록**: 질문마다 `finance-supervisor` 루트 run이 하나씩 기록됩니다. 아래 화면은 분석 요청(셀트리온)과 단순 질문(현대차 작년 매출) 두 건입니다. 왼쪽 필터에 코드에서 붙인 tag(`supervisor-pattern`, `trace:<id>`)와 metadata(`trace_id`, `thread_id`, `question`, `model`)가 보이므로, State·JSONL 로그와 같은 `trace_id`로 찾아볼 수 있습니다.
+
+![LangSmith Traces 목록](docs/images/langsmith1.png)
+
+**② 프로젝트 요약**: 2개 trace에서 LLM `gpt-5-mini` 31회, 도구 19회가 호출됐고 오류율은 0%입니다. 도구 호출 분포(사업보고서 검색 7, 계산기·재무제표·공시 각 3, 재무 비율·기업 개황·주가 각 1)를 보면, 질문 유형에 따라 Supervisor가 다른 에이전트와 도구를 불렀다는 것을 알 수 있습니다.
+
+![LangSmith 프로젝트 요약](docs/images/langsmith2.png)
 
 ## Example: 셀트리온
 > 질문: `셀트리온 재무 분석해줘`
 
+**① 실행 화면**: Supervisor 라우팅 지시와 사유, 하위 에이전트의 도구 호출을 실시간으로 표시합니다.
+
+![셀트리온 분석 진행 과정](docs/images/celltrion_process.png)
+
+**② 품질 평가 통과 → 리포트 출력**: Evaluator 통과(groundedness·neutrality·bias_control 5/5) 후, 답변을 Markdown으로 보여주고 **.md / PDF 다운로드** 버튼을 제공합니다.
+
+![셀트리온 평가 통과 및 리포트](docs/images/celltrion_result.png)
+
+<details>
+<summary>웹 리포트 전체 화면 보기 (SUMMARY ~ REFERENCE)</summary>
+
+![셀트리온 재무 분석 리포트 전체](docs/images/celltrion_report_full.png)
+
+</details>
+
+**③ PDF 리포트** ([docs/celltrion_report.pdf](docs/celltrion_report.pdf), A4 4쪽)
+
+| 1쪽 | 2쪽 |
+|---|---|
+| ![PDF 1쪽](docs/images/celltrion_pdf-1.png) | ![PDF 2쪽](docs/images/celltrion_pdf-2.png) |
+
+<details>
+<summary>PDF 3~4쪽 보기</summary>
+
+| 3쪽 | 4쪽 |
+|---|---|
+| ![PDF 3쪽](docs/images/celltrion_pdf-3.png) | ![PDF 4쪽](docs/images/celltrion_pdf-4.png) |
+
+</details>
+
+**위 실행의 Supervisor 결정** (`trace_id=9ddb3141…`)
+
 | step | Supervisor 결정 | 사유 (결정 로그 요약) |
 |---|---|---|
 | 1 | → researcher | 근거 없음, 6개 관점 전부 누락 |
-| 2 | → researcher (재작업 1) | 사업보고서 검색 오류로 '사업 구조·리스크' 관점 누락 |
-| 3 | → analyst | '재무 비율' 관점만 누락 |
-| 4 | → researcher (재작업 2) | 규칙상 관점은 모두 확보, LLM이 analyst 해석을 검증할 사업보고서 근거가 부족하다고 판단 |
-| 5 | → writer | researcher 재작업 한도 도달 → 확보 근거로 작성, 제약 명시 |
-| – | evaluator 통과 | 규칙 8/8, Judge groundedness·neutrality·bias 5/5/5 → finalize |
+| 2 | → analyst | researcher가 연결재무제표·공시·사업보고서 수집 완료, '재무 비율'만 누락 |
+| 3 | → writer | 필수 관점 모두 확보, 근거 충분 |
+| – | evaluator 통과 | 규칙 8/8, Judge groundedness·neutrality·bias 5/5/5 → finalize (.md + .pdf 저장) |
 
-- 같은 질문의 다른 실행에서는 evaluator가 중립성(투자 권유 표현)과 groundedness(근거 없는 인과 설명) 미달을 연달아 판정했습니다. 그때마다 Supervisor로 돌아가 writer 재작성 → 재평가 Loop를 돌았고, 2회 수정 후 통과했습니다.
+**같은 질문의 다른 실행** (수집 결과에 따라 경로가 달라짐)
+
+| 실행 | 경로 | 동적 처리 |
+|---|---|---|
+| A | researcher → **researcher** → analyst → **researcher** → writer → 통과 | 사업보고서 검색 오류로 '사업 구조·리스크' 누락 → 재작업. 이후 LLM이 정성 근거 부족으로 판단 → 재작업 2회(상한) 뒤 작성 |
+| B | researcher → analyst → writer → **미달** → writer → **미달** → 재수집 → writer → 통과 | 중립성(투자 권유 표현), groundedness(근거 없는 인과 설명) 미달 → Supervisor로 Loop, 2회 수정 후 통과 |
+
 - 각 실행의 결정 이력은 `outputs/logs/decisions.jsonl`에서 `trace_id`로 조회할 수 있습니다.
 
-![셀트리온 재무 분석 리포트](docs/images/celltrion_report.png)
+<details>
+<summary>시작 화면</summary>
+
+![시작 화면](docs/images/home.png)
+
+</details>
 
 ## Directory Structure
 ```
@@ -158,14 +208,15 @@ prepare → supervisor ──(add_conditional_edges: State["next"])──┬─�
 │   ├── agents.py         # 하위 에이전트: researcher·analyst(ReAct)·writer, 출처 추출
 │   ├── evaluator.py      # 품질 평가 노드 (규칙 + LLM Judge), finalize
 │   ├── observability.py  # 결정 로그(JSONL), LangSmith run config
+│   ├── export.py         # 리포트 저장 (.md + .pdf)
 │   ├── prompts.py        # 프롬프트 템플릿
 │   ├── tools.py          # 데이터 수집·재무 비율 계산 도구
 │   ├── dart.py           # OpenDART API 클라이언트
 │   └── rag.py            # 사업보고서 파싱·인덱싱·하이브리드 검색
 ├── backend/app.py        # FastAPI (SSE 분석 API, 리포트 API)
 ├── frontend/             # Next.js 웹 UI
-├── docs/images/          # 그래프·실행 화면·트레이스 캡처
-├── outputs/              # 실행 결과 (reports/, logs/decisions.jsonl) — git 제외
+├── docs/                 # 샘플 PDF 리포트, images/(그래프·실행 화면·트레이스 캡처)
+├── outputs/              # 실행 결과 (reports/*.md·*.pdf, logs/decisions.jsonl) — git 제외
 ├── main.py               # CLI 실행
 └── requirements.txt
 ```
@@ -178,7 +229,8 @@ cp .env.example .env      # OPENAI_API_KEY, OPENDART_API_KEY, (LANGSMITH_*) 입�
 # 2. 설치 및 CLI 실행
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python main.py "셀트리온 재무 분석해줘"   # 단일 질문 (리포트: outputs/reports/)
+playwright install chromium              # PDF 출력용 (Chrome이 설치돼 있으면 생략 가능)
+python main.py "셀트리온 재무 분석해줘"   # 단일 질문 (outputs/reports/에 .md + .pdf 저장)
 python main.py                           # 대화형 모드
 python main.py --graph                   # 그래프 이미지 생성 (docs/images/graph.png)
 
@@ -191,7 +243,8 @@ cd frontend && cp .env.example .env.local && npm install && npm run dev   # http
 |---|---|---|
 | `POST` | `/api/analyze` | 질문을 받아 에이전트 진행 상황을 SSE로 스트리밍 |
 | `GET` | `/api/reports` | 저장된 리포트 목록 |
-| `GET` | `/api/reports/{name}` | 리포트 본문 |
+| `GET` | `/api/reports/{name}` | 리포트 본문 (Markdown) |
+| `GET` | `/api/reports/{name}/pdf` | 리포트 PDF 다운로드 (없으면 생성) |
 
 ## Contributors
 - {이름} : {담당 역할 — 예: Supervisor·State Schema 설계, 규칙 가드}

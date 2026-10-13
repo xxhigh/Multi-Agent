@@ -3,6 +3,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { reportPdfUrl } from "@/lib/api";
 
 export function ReportView({ content, name }: { content: string; name: string }) {
   const [copied, setCopied] = useState(false);
@@ -31,6 +32,9 @@ export function ReportView({ content, name }: { content: string; name: string })
           <button onClick={download} className="btn-ghost">
             .md 다운로드
           </button>
+          <a href={reportPdfUrl(name)} download className="btn-ghost">
+            PDF 다운로드
+          </a>
         </div>
       </div>
       <div className="prose prose-sm max-w-none px-5 py-5 sm:prose-base sm:px-7 dark:prose-invert prose-headings:tracking-tight prose-table:text-sm">
