@@ -1,6 +1,7 @@
 """투자 보고서 형식 검사.
 
 보고서는 SUMMARY 로 시작해 REFERENCE 로 끝나고, REFERENCE 는 자료 종류별 표기 형식을 따른다.
+구성은 최대 10장이다: 장(##)은 SUMMARY 와 REFERENCE 를 포함해 10개로 고정이고, PDF 분량도 10쪽을 넘지 않는다.
 형식은 프롬프트로 지시하지만 LLM이 어길 수 있으므로 writer가 낸 결과를 여기서 다듬고 검사한다.
 - normalize_references: 코드로 고칠 수 있는 것(자료 종류별 분류, 문서 풀 보고서의 표기)을 고친다.
 - violations: 남은 위반 사항을 찾아 writer가 고쳐 쓰도록 되돌려 준다.
@@ -9,12 +10,16 @@
 import json
 import re
 
+from . import pdf
 from .dart import DATA_DIR
 
 SUMMARY, REFERENCE = "SUMMARY", "REFERENCE"
 # 투자 평가 보고서의 장 제목 (순서 고정)
 CHAPTERS = (SUMMARY, "1. 사업 아이디어", "2. 팀 구성", "3. 기술 분석", "4. 시장 규모 및 경쟁 구도",
             "5. 사업화 및 재무", "6. 투자 평가", "7. 사업 리스크", "8. 한계점", REFERENCE)
+MAX_CHAPTERS = 10  # 보고서 구성 상한. 장을 추가하려면 다른 장을 합쳐야 한다
+MAX_PAGES = 10  # PDF 분량 상한 (A4)
+assert len(CHAPTERS) <= MAX_CHAPTERS
 RISK_SECTIONS = ("시장", "기술", "규제", "경쟁")
 SUMMARY_MAX_CHARS = 700  # 반 페이지 분량
 
@@ -90,6 +95,13 @@ def violations(report: str, full: bool) -> list[str]:
     sections = _sections(report)
     titles = [t for t, _ in sections]
     body = dict(sections)
+
+    if len(titles) > MAX_CHAPTERS:
+        found.append(f"장(##)이 {len(titles)}개입니다. {MAX_CHAPTERS}개를 넘을 수 없습니다.")
+    pages = pdf.page_count(report)
+    if pages > MAX_PAGES:
+        found.append(f"보고서가 PDF로 {pages}쪽입니다. {MAX_PAGES}쪽 이내가 되도록 핵심만 남기고 줄이세요 "
+                     "(표와 REFERENCE 는 유지).")
 
     if full:
         if titles != list(CHAPTERS):

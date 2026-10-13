@@ -28,8 +28,8 @@ a { color: #1a1a1a; text-decoration: none; }
 """
 
 
-def to_pdf(text: str, path: Path) -> Path:
-    """Markdown 텍스트를 A4 PDF로 저장한다."""
+def _render(text: str) -> pymupdf.Document:
+    """Markdown 텍스트를 A4 쪽으로 조판한다."""
     html = markdown.markdown(text, extensions=["tables", "sane_lists"])
     story = pymupdf.Story(html=html, user_css=CSS)
     buffer = io.BytesIO()
@@ -42,7 +42,17 @@ def to_pdf(text: str, path: Path) -> Path:
         story.draw(device)
         writer.end_page()
     writer.close()
-    doc = pymupdf.open("pdf", buffer.getvalue())
+    return pymupdf.open("pdf", buffer.getvalue())
+
+
+def page_count(text: str) -> int:
+    """PDF로 만들었을 때의 쪽수."""
+    return len(_render(text))
+
+
+def to_pdf(text: str, path: Path) -> Path:
+    """Markdown 텍스트를 A4 PDF로 저장한다."""
+    doc = _render(text)
     doc.subset_fonts()  # CJK 글꼴 전체(약 4MB)를 넣지 않고 쓰인 글자만 남긴다
     doc.save(str(path), garbage=4, deflate=True)
     return path

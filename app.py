@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from agents import build_graph, pdf, trace  # noqa: E402
+from agents.report import MAX_PAGES  # noqa: E402
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "outputs"
 
@@ -26,7 +27,11 @@ def _save_report(report: str) -> Path:
     OUTPUT_DIR.mkdir(exist_ok=True)
     path = OUTPUT_DIR / f"report_{datetime.now():%Y%m%d_%H%M%S}.pdf"
     path.with_suffix(".md").write_text(report, encoding="utf-8")
-    return pdf.to_pdf(report, path)
+    pdf.to_pdf(report, path)
+    pages = pdf.page_count(report)
+    if pages > MAX_PAGES:
+        print(f"\n⚠️  보고서가 {pages}쪽입니다 (상한 {MAX_PAGES}쪽).")
+    return path
 
 
 def run(graph, question: str | None, thread_id: str) -> bool:
