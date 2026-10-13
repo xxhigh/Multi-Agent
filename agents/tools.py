@@ -1,26 +1,28 @@
-"""국내 상장사 재무 agent가 사용하는 도구 모음.
+"""스타트업 투자 평가 agent가 사용하는 도구 모음.
 
-- 재무제표·기업개황·공시: OpenDART
-- 주가·시가총액: Yahoo Finance(yfinance)
-- 산업 전략·정책·전망 보고서: data/docs 문서 풀 (FAISS, bge-m3)
-- 뉴스·업계 동향: Tavily 웹 검색
-수치 계산은 LLM이 아니라 Python에서 처리해 정확도를 확보한다.
+- 기업 정보·뉴스·투자 유치: Tavily 웹 검색
+- 산업·기술 문서: data/docs 문서 풀 (FAISS, bge-m3)
+- 국내 상장사의 기업개황·재무제표·공시: OpenDART (비상장·해외 기업은 조회되지 않는다)
+- 시가총액: Yahoo Finance(yfinance)
+재무 비율과 스코어카드 합산은 LLM이 아니라 Python에서 처리해 정확도를 확보한다.
 """
 
 import ast
-import math
 import operator
 import os
 from functools import lru_cache, wraps
+from typing import Literal
 
 import yfinance as yf
 from langchain_core.tools import tool
+from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
-from . import dart, rag
+from . import criteria, dart
 from .dart import DartError
 
-FINANCIAL_TABLE_MARK = "(원본 표: 숫자·단위를 수정하지 말고 그대로 인용)"
+# 이 표시가 있는 도구 결과(재무제표, 스코어카드)는 요약 과정에서 숫자가 바뀌지 않도록 보고서까지 그대로 전달한다
+VERBATIM_MARK = "(원본 표: 숫자·단위를 수정하지 말고 그대로 인용)"
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +143,7 @@ def _safe(fn):
 
 
 # ---------------------------------------------------------------------------
-# Researcher 도구: 데이터 수집
+# 국내 상장사 도구: DART 공시 데이터
 # ---------------------------------------------------------------------------
 
 @tool
@@ -197,8 +199,8 @@ def get_financial_statements(company: str, report: str = "annual", year: int | N
         headers = [f"{y} {report} 누적", f"{y - 1} 동기 누적(재무상태표는 전기말)"]
     else:
         headers = [f"{y}", f"{y - 1}", f"{y - 2}"]
-    # LLM이 숫자를 옮겨 적다 단위를 틀리지 않도록 리포트에 그대로 붙일 수 있는 Markdown 표로 만든다
-    out = [f"[{corp.name} {'연결' if fs == 'CFS' else '별도'}재무제표, {report}] {FINANCIAL_TABLE_MARK}",
+    # LLM이 숫자를 옮겨 적다 단위를 틀리지 않도록 보고서에 그대로 붙일 수 있는 Markdown 표로 만든다
+    out = [f"[{corp.name} {'연결' if fs == 'CFS' else '별도'}재무제표, {report}] {VERBATIM_MARK}",
            "",
            "| 계정 | " + " | ".join(headers) + " |",
            "|---|" + "---:|" * len(headers)]
@@ -211,38 +213,6 @@ def get_financial_statements(company: str, report: str = "annual", year: int | N
             fmt = (lambda v: "N/A" if v is None else f"{v:,.0f}원") if key == "기본주당이익" else _krw
             out.append(f"| {key} | " + " | ".join(fmt(v) for v in vals) + " |")
     return "\n".join(out)
-
-
-@tool
-@_safe
-def get_price_summary(company: str, period: str = "1y") -> str:
-    """주가 이력을 요약한다: 기간 수익률, 고/저가, 이동평균(50/200일), 연환산 변동성, 최대낙폭.
-
-    company: 정식 회사명 또는 6자리 종목코드
-    period: '1mo', '3mo', '6mo', '1y', '2y', '5y' 중 하나
-    """
-    corp = _resolve(company)
-    info = dart.company_info(corp.corp_code)
-    hist = _yf_ticker(corp.stock_code, info.get("corp_cls", "Y")).history(period=period)
-    if hist.empty:
-        return f"{corp.name}의 주가 데이터를 찾을 수 없습니다."
-    close = hist["Close"]
-    daily_ret = close.pct_change().dropna()
-    drawdown = close / close.cummax() - 1
-    ma50 = close.rolling(50).mean().iloc[-1] if len(close) >= 50 else None
-    ma200 = close.rolling(200).mean().iloc[-1] if len(close) >= 200 else None
-    last = close.iloc[-1]
-    lines = [
-        f"[{corp.name} 주가 요약, 기간 {period}, {close.index[0].date()} ~ {close.index[-1].date()}]",
-        f"최근 종가: {last:,.0f}원",
-        f"기간 수익률: {_pct(last / close.iloc[0] - 1)}",
-        f"기간 최고/최저(종가): {close.max():,.0f}원 / {close.min():,.0f}원",
-        f"50일 이동평균: {f'{ma50:,.0f}원' if ma50 else 'N/A'} (현재가 대비 {_pct(last / ma50 - 1) if ma50 else 'N/A'})",
-        f"200일 이동평균: {f'{ma200:,.0f}원' if ma200 else 'N/A'} (현재가 대비 {_pct(last / ma200 - 1) if ma200 else 'N/A'})",
-        f"연환산 변동성: {_pct(daily_ret.std() * math.sqrt(252))}",
-        f"최대낙폭(MDD): {_pct(drawdown.min())}",
-    ]
-    return "\n".join(lines)
 
 
 @tool
@@ -267,30 +237,19 @@ def get_recent_disclosures(company: str, days: int = 90) -> str:
     return "\n".join(lines)
 
 
-@tool
-@_safe
-def search_business_report(company: str, query: str, k: int = 5) -> str:
-    """최신 사업보고서 본문에서 질문과 관련된 부분을 검색한다 (RAG).
-
-    검색 범위: 사업의 내용(사업 개요, 주요 제품·서비스, 부문별 매출 비중, 원재료, 위험관리, 연구개발),
-    이사의 경영진단 및 분석의견(실적 변동 원인, 유동성·자금조달), 영업부문·우발채무 주석, 소송·제재 사항.
-    숫자 재무제표가 아니라 '왜/무엇을/어떤 위험' 같은 정성 정보가 필요할 때 사용한다.
-    company: 정식 회사명 또는 6자리 종목코드
-    query: 찾을 내용 (예: '부문별 매출 비중', '영업이익 감소 원인', '주요 리스크')
-    k: 가져올 문단 수
-    처음 조회하는 기업은 원문 다운로드·인덱싱으로 시간이 조금 걸린다.
-    """
-    return rag.search(company, query, k)
-
+# ---------------------------------------------------------------------------
+# 문서 풀 도구: 산업·기술 문서 RAG
+# ---------------------------------------------------------------------------
 
 @tool
 def search_documents(query: str, k: int = 5) -> str:
     """문서 풀(data/docs)에서 질문과 관련된 부분을 검색한다 (RAG).
 
-    검색 범위: 정부의 AI반도체 산업 전략, 연구기관(KISDI)의 AI반도체 시장·기술·산업 동향 보고서,
-    컨설팅사의 산업 전망 보고서. 개별 기업의 재무 수치가 아니라 산업 규모·성장 전망, 기술 동향,
-    정부 정책·지원, 경쟁 구도 같은 산업 차원의 근거가 필요할 때 사용한다.
-    query: 찾을 내용 (예: 'AI반도체 시장 규모 전망', '국산 NPU 지원 정책', 'HBM 수요 전망')
+    검색 범위: 미리 수집해 둔 Physical AI · 로보틱스 산업·기술 보고서(증권사 산업 분석, 싱크탱크 정책 보고서,
+    컨설팅사 전망). 개별 기업의 최신 소식이 아니라 기술 동향(로봇 파운데이션 모델, 학습 데이터, 하드웨어·부품),
+    시장 규모·성장 전망, 생태계와 가치사슬, 정책, 주요 업체 구도처럼 산업 차원의 근거가 필요할 때 사용한다.
+    결과마다 문서 제목·발행기관·날짜·쪽수가 붙는다. 한국어·영어 문서가 섞여 있어 두 언어 모두 검색된다.
+    query: 찾을 내용 (예: '휴머노이드 로봇 시장 규모 전망', '로봇 파운데이션 모델 학습 데이터', 'Physical AI supply chain')
     k: 가져올 문단 수
     처음 호출할 때는 임베딩 모델을 올리느라 시간이 걸린다.
     """
@@ -302,7 +261,7 @@ def search_documents(query: str, k: int = 5) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Analyst 도구: 지표 계산
+# Evaluator 도구: 재무 비율 · 스코어카드
 # ---------------------------------------------------------------------------
 
 @tool
@@ -390,7 +349,7 @@ def _ttm_owner_ni(corp: dart.Corp, annual_year: int, annual_ni) -> tuple:
 
 
 # ---------------------------------------------------------------------------
-# Web Searcher 도구: 웹 검색
+# 웹 검색 도구
 # ---------------------------------------------------------------------------
 
 WEB_TOPICS = ("general", "news", "finance")
@@ -404,12 +363,13 @@ def _tavily() -> TavilyClient:
 
 
 @tool
-def web_search(query: str, topic: str = "news", time_range: str | None = None, max_results: int = 5) -> str:
+def web_search(query: str, topic: str = "general", time_range: str | None = None, max_results: int = 5) -> str:
     """Tavily로 웹을 검색해 제목·날짜·URL·본문 요약을 반환한다.
 
-    DART 공시나 사업보고서에 없는 외부 정보(최근 뉴스, 업계·경쟁사 동향, 증권가 시각, 규제·정책)를 찾을 때 사용한다.
-    query: 검색어. 회사명과 주제를 함께 넣는다 (예: '셀트리온 짐펜트라 미국 판매 실적')
-    topic: 'news'(뉴스 기사, 기본값), 'finance'(금융·시장 정보), 'general'(일반 웹)
+    스타트업의 기업 정보(설립, 창업자·팀, 제품, 고객, 투자 유치 이력, 기업가치)와 기술 자료, 시장·경쟁사 동향,
+    최근 뉴스를 찾을 때 사용한다. 영어 자료가 많은 해외 기업은 영어 검색어도 함께 쓴다.
+    query: 검색어. 회사명과 주제를 함께 넣는다 (예: 'Figure AI Series C funding valuation', '레인보우로보틱스 휴머노이드 양산')
+    topic: 'general'(일반 웹, 기본값), 'news'(뉴스 기사), 'finance'(금융·시장 정보)
     time_range: 최근 기간으로 제한. 'day', 'week', 'month', 'year' 중 하나. 생략하면 제한 없음
     max_results: 가져올 결과 수 (1~10)
     """
@@ -460,7 +420,43 @@ def calculator(expression: str) -> str:
         return f"계산 오류: {e}"
 
 
-RESEARCH_TOOLS = [search_company, get_company_overview, get_financial_statements,
-                  get_price_summary, get_recent_disclosures, search_business_report, search_documents]
-ANALYST_TOOLS = [calculate_financial_ratios, search_business_report, calculator]
-WEB_TOOLS = [web_search]
+class CriterionScore(BaseModel):
+    criterion: Literal[tuple(c.key for c in criteria.CRITERIA)] = Field(description="평가 항목 key")
+    score: int | None = Field(description="1~5점 (5가 가장 우수). 근거가 없어 평가할 수 없으면 null")
+    rationale: str = Field(description="점수의 근거를 출처와 함께 1~2문장으로")
+
+
+@tool
+def score_investment(company: str, scores: list[CriterionScore]) -> str:
+    """평가 항목별 점수를 받아 가중 합산한 종합 점수(100점)와 투자 의견을 스코어카드 표로 반환한다.
+
+    company: 평가 대상 기업명
+    scores: 모든 평가 항목에 대해 하나씩. 근거가 없는 항목은 score를 null로 둔다 (그 항목을 빼고 환산)
+    종합 점수와 투자 의견은 직접 계산하지 말고 반드시 이 도구의 결과를 사용한다.
+    """
+    given = {s.criterion: s for s in scores}
+    absent = [c.key for c in criteria.CRITERIA if c.key not in given]
+    if absent:
+        return f"오류: 다음 평가 항목이 빠졌습니다: {absent}. 모든 항목을 넣어 다시 호출하세요 (근거가 없으면 score=null)."
+    invalid = [s.criterion for s in scores if s.score is not None and not 1 <= s.score <= criteria.MAX_SCORE]
+    if invalid:
+        return f"오류: score는 1~{criteria.MAX_SCORE} 또는 null이어야 합니다: {invalid}"
+
+    total, weight, verdict = criteria.total({k: s.score for k, s in given.items()})
+    out = [f"[{company} 투자 평가 스코어카드] {VERBATIM_MARK}",
+           "",
+           "| 평가 항목 | 가중치 | 점수 | 근거 요약 |",
+           "|---|---:|---:|---|"]
+    for c in criteria.CRITERIA:
+        s = given[c.key]
+        score = "평가 보류" if s.score is None else f"{s.score} / {criteria.MAX_SCORE}"
+        out.append(f"| {c.name} | {c.weight}% | {score} | {' '.join(s.rationale.replace('|', '/').split())} |")
+    total_text = "N/A" if total is None else f"{total:.1f} / 100"
+    out.append(f"| **종합** | {weight}% 평가 | **{total_text}** | **{verdict}** |")
+    return "\n".join(out)
+
+
+COMPANY_TOOLS = [web_search, search_company, get_company_overview, get_financial_statements, get_recent_disclosures]
+TECH_TOOLS = [search_documents, web_search]
+MARKET_TOOLS = [search_documents, web_search]
+EVALUATOR_TOOLS = [score_investment, calculate_financial_ratios, calculator]

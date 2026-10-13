@@ -1,10 +1,10 @@
-"""재무 분석 멀티 agent 실행 스크립트 (CLI).
+"""AI 스타트업 투자 평가 멀티 agent 실행 스크립트 (CLI).
 
 사용법 (프로젝트 루트에서):
-    python app.py                         # 대화형 모드
-    python app.py "셀트리온 재무 분석해줘"   # 단일 질문
+    python app.py                                  # 대화형 모드
+    python app.py "Figure AI 투자 가능성 평가해줘"   # 단일 질문
 
-리포트는 outputs/ 에, 실행 트레이스(결정·사유·작업 결과)는 outputs/traces/<run_id>.jsonl 에 저장된다.
+보고서는 outputs/ 에, 실행 트레이스(결정·사유·작업 결과)는 outputs/traces/<run_id>.jsonl 에 저장된다.
 """
 
 import sys
@@ -72,9 +72,9 @@ def run(graph, question: str | None, thread_id: str) -> bool:
         print("\n" + "=" * 70 + "\n" + report + "\n" + "=" * 70)
         path = _save_report(report)
         trace.log(run_id, "report_saved", path=str(path))
-        print(f"\n📄 리포트 저장: {path}")
+        print(f"\n📄 보고서 저장: {path}")
     elif status == "failed":
-        print("\n❌ 리포트를 작성하지 못했습니다.")
+        print("\n❌ 보고서를 작성하지 못했습니다.")
     print(f"🔎 트레이스: {trace.path(run_id)}")
     return status == "done"
 
@@ -87,7 +87,7 @@ def main() -> None:
     if len(sys.argv) > 1:
         sys.exit(0 if run(graph, " ".join(sys.argv[1:]), thread_id) else 1)
 
-    print("💰 재무 분석 agent (종료: exit, 중단된 실행 재개: resume)")
+    print("🤖 AI 스타트업 투자 평가 agent — Physical AI / Robotics (종료: exit, 중단된 실행 재개: resume)")
     while True:
         try:
             q = input("\n질문> ").strip()

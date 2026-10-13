@@ -1,18 +1,19 @@
-"""Supervisor 기반 멀티 agent 재무 분석 그래프.
+"""Supervisor 기반 멀티 agent 스타트업 투자 평가 그래프.
 
-                              ┌─Send─▶ researcher ───┐
- START → init → supervisor ───┼─Send─▶ web_searcher ─┼─▶ supervisor → … → writer → supervisor → END
-                              └─Send─▶ analyst ──────┘
+                              ┌─Send─▶ company_researcher ─┐
+ START → init → supervisor ───┼─Send─▶ tech_researcher ────┼─▶ supervisor → evaluator → supervisor
+                              └─Send─▶ market_researcher ──┘        → writer → supervisor → END
 
 - init       : 질문마다 제어 메타(run_id, step, rounds …)와 누적 필드를 초기화
 - supervisor : 매 턴 증거가 충분한지 판단하고 다음 작업을 결정. 서로 독립인 작업은 Send로 동시에 내보낸다.
-               부족한 관점이 있으면 researcher/web_searcher/analyst에게 그 관점만 재조사시킨다.
-- researcher : 기업 개요·주가·재무제표 등 원천 데이터 수집 (도구 사용)
-- web_searcher : 뉴스·업계 동향 등 DART에 없는 외부 정보를 Tavily 웹 검색으로 수집 (도구 사용)
-- analyst    : 재무 비율 계산 및 해석 (도구 사용)
-- writer     : 수집·분석 결과를 한국어 리포트로 작성 (증거가 충분하거나 조사 한도에 도달했을 때만)
+               근거가 부족한 평가 항목이 있으면 해당 researcher에게 그 항목만 재조사시킨다.
+- company_researcher : 기업 정보 수집 — 웹 검색, 국내 상장사는 DART (도구 사용)
+- tech_researcher    : 기술 근거 수집 — 문서 풀 RAG, 웹 검색 (도구 사용)
+- market_researcher  : 시장·경쟁 근거 수집 — 문서 풀 RAG, 웹 검색 (도구 사용)
+- evaluator  : 평가 항목별 점수와 근거, 스코어카드 산출 (도구 사용)
+- writer     : 조사·평가 결과를 투자 검토 보고서로 작성 (증거가 충분하거나 조사 한도에 도달했을 때만)
 
-State 스키마와 설계 원칙은 state.py 참고.
+State 스키마와 설계 원칙은 state.py, 평가 항목은 criteria.py 참고.
 """
 
 import os
@@ -30,22 +31,45 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.types import Command, Send
 from pydantic import BaseModel, Field
 
-from prompts import ANALYST_PROMPT, RESEARCHER_PROMPT, SUPERVISOR_PROMPT, WEB_SEARCHER_PROMPT, WRITER_PROMPT
+from prompts import (
+    COMPANY_RESEARCHER_PROMPT,
+    EVALUATOR_PROMPT,
+    MARKET_RESEARCHER_PROMPT,
+    SUPERVISOR_PROMPT,
+    TECH_RESEARCHER_PROMPT,
+    WRITER_PROMPT,
+)
 
-from . import trace
-from .state import Decision, ErrorRecord, FinanceState, Finding, Task, WorkerInput
-from .tools import ANALYST_TOOLS, FINANCIAL_TABLE_MARK, RESEARCH_TOOLS, WEB_TOOLS
+from . import criteria, report, trace
+from .state import Decision, ErrorRecord, EvaluationState, Finding, Task, WorkerInput
+from .tools import COMPANY_TOOLS, EVALUATOR_TOOLS, MARKET_TOOLS, TECH_TOOLS, VERBATIM_MARK
+
+RESEARCHERS = ("company_researcher", "tech_researcher", "market_researcher")
+
+# 도구를 쓰는 worker: 이름 → (프롬프트, 도구)
+WORKERS = {
+    "company_researcher": (COMPANY_RESEARCHER_PROMPT, COMPANY_TOOLS),
+    "tech_researcher": (TECH_RESEARCHER_PROMPT, TECH_TOOLS),
+    "market_researcher": (MARKET_RESEARCHER_PROMPT, MARKET_TOOLS),
+    "evaluator": (EVALUATOR_PROMPT, EVALUATOR_TOOLS),
+}
 
 # 종료 보장: 모든 반복에 상한을 둔다
 MAX_STEPS = 10  # 질문 하나에 supervisor가 내릴 수 있는 결정 수. 마지막 결정은 writer로 고정
-MAX_RESEARCH_ROUNDS = 6  # 질문 하나에 researcher/web_searcher/analyst에게 맡길 수 있는 작업 수
+MAX_RESEARCH_ROUNDS = 5  # 질문 하나에 researcher에게 맡길 수 있는 작업 수 (기본 3건 + 재조사 2건)
 MAX_PARALLEL = 3  # 한 번에 동시에 내보내는 작업 수
 MAX_ATTEMPTS = 2  # 같은 작업의 시도 횟수 (최초 1회 + 재시도 1회)
-MAX_HISTORY_MESSAGES = 7  # 대화에 남기는 메시지 수 (이전 질문·리포트 3쌍 + 이번 질문)
+MAX_HISTORY_MESSAGES = 7  # 대화에 남기는 메시지 수 (이전 질문·보고서 3쌍 + 이번 질문)
+
+
+# supervisor가 근거 부족을 표시하는 단위. 구하려는 문서가 아니라 평가 항목으로 적게 해서 재조사 범위를 좁힌다
+MISSING_LABELS = {**{c.key: c.name for c in criteria.CRITERIA},
+                  "risk": "리스크", "scorecard": "스코어카드", "other": "요청한 사실"}
 
 
 class Assignment(BaseModel):
-    agent: Literal["researcher", "web_searcher", "analyst", "writer"] = Field(description="작업할 agent")
+    agent: Literal["company_researcher", "tech_researcher", "market_researcher", "evaluator", "writer"] = Field(
+        description="작업할 agent")
     instruction: str = Field(description="그 agent에게 줄 구체적인 작업 지시")
 
 
@@ -53,7 +77,11 @@ class Route(BaseModel):
     """supervisor의 증거 충분성 판단과 라우팅 결정."""
 
     sufficient: bool = Field(description="지금까지의 결과만으로 사용자 질문에 답할 증거가 충분한가")
-    missing: list[str] = Field(description="근거가 부족한 관점 이름 목록. 충분하면 빈 목록")
+    missing: list[Literal[tuple(MISSING_LABELS)]] = Field(
+        description="근거가 부족한 평가 항목 key 목록. 리스크는 risk, 스코어카드가 없으면 scorecard, "
+                    "단순 질문에서 요청한 사실이 없으면 other. 충분하면 빈 목록")
+    needs_scorecard: bool = Field(
+        description="투자 평가·검토·비교 요청이라 스코어카드가 필요하면 true. 단순 사실 질문이나 지원 범위 밖 요청이면 false")
     reason: str = Field(description="이렇게 판단하고 이 agent를 고른 이유 (1~2문장)")
     assignments: list[Assignment] = Field(
         description="다음에 맡길 작업. 서로 독립인 작업은 여러 개를 넣어 동시에 실행할 수 있다. "
@@ -65,6 +93,10 @@ def _llm() -> ChatOpenAI:
     return ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-5-mini"))
 
 
+def _render(prompt: str) -> str:
+    return prompt.format(today=date.today(), criteria=criteria.render())
+
+
 def _make_tool_agent(system_prompt: str, tools: list, max_tool_rounds: int = 8):
     """LLM ↔ ToolNode 루프를 도는 단일 ReAct agent 서브그래프.
 
@@ -74,7 +106,7 @@ def _make_tool_agent(system_prompt: str, tools: list, max_tool_rounds: int = 8):
     llm = base.bind_tools(tools)
 
     def call_model(state: MessagesState):
-        msgs = [SystemMessage(system_prompt.format(today=date.today()))] + state["messages"]
+        msgs = [SystemMessage(_render(system_prompt))] + state["messages"]
         rounds = sum(1 for m in state["messages"] if isinstance(m, AIMessage) and m.tool_calls)
         if rounds >= max_tool_rounds:
             msgs.append(HumanMessage("도구 호출 한도에 도달했습니다. 지금까지 얻은 결과만으로 최종 보고를 작성하세요."))
@@ -88,12 +120,12 @@ def _make_tool_agent(system_prompt: str, tools: list, max_tool_rounds: int = 8):
     g.add_edge(START, "agent")
     g.add_conditional_edges("agent", tools_condition)
     g.add_edge("tools", "agent")
-    # 도구 호출 기록(사업보고서 본문 등)은 체크포인트에 저장하지 않는다. 중단되면 이 worker만 처음부터 다시 실행된다.
+    # 도구 호출 기록(검색 결과 본문 등)은 체크포인트에 저장하지 않는다. 중단되면 이 worker만 처음부터 다시 실행된다.
     return g.compile(checkpointer=False)
 
 
 def _context(messages: list, findings: list[Finding]) -> list:
-    """LLM에 보여 줄 대화: 이전 질문·리포트와 이번 질문, 그 뒤로 이번 질문의 작업 지시와 결과."""
+    """LLM에 보여 줄 대화: 이전 질문·보고서와 이번 질문, 그 뒤로 이번 질문의 작업 지시와 결과."""
     out = list(messages)
     for f in findings:
         out.append(HumanMessage(content=f"[{f['agent']}에게 지시] {f['instruction']}", name="supervisor"))
@@ -110,14 +142,14 @@ def _failure(state: WorkerInput, error: Exception) -> dict:
     return {"errors": [record]}
 
 
-def _init_node(state: FinanceState, config: RunnableConfig) -> dict:
+def _init_node(state: EvaluationState, config: RunnableConfig) -> dict:
     """새 질문의 실행을 시작한다. 중단된 실행을 재개할 때는 이 노드를 거치지 않으므로 진행 상태가 유지된다."""
     run_id = uuid.uuid4().hex[:12]
     messages = state["messages"]
     trace.log(run_id, "run_start", thread_id=config["configurable"].get("thread_id"), question=messages[-1].content)
     return {
         "run_id": run_id, "status": "running", "step": 0, "rounds": 0, "decision": None,
-        "findings": None, "errors": None, "report": "",  # 이전 질문의 결과는 비운다 (리포트는 messages에 남아 있다)
+        "findings": None, "errors": None, "report": "",  # 이전 질문의 결과는 비운다 (보고서는 messages에 남아 있다)
         "messages": [RemoveMessage(id=m.id) for m in messages[:-MAX_HISTORY_MESSAGES]],
     }
 
@@ -125,7 +157,7 @@ def _init_node(state: FinanceState, config: RunnableConfig) -> dict:
 def _worker_node(name: str, agent):
     """서브그래프를 실행하고 최종 답변만 findings에 남긴다.
 
-    재무제표 도구의 원본 표는 요약 과정에서 숫자가 바뀌지 않도록 최종 답변 뒤에 그대로 붙인다.
+    재무제표·스코어카드처럼 원본 표시가 있는 도구 결과는 요약 과정에서 숫자가 바뀌지 않도록 최종 답변 뒤에 그대로 붙인다.
     """
 
     def node(state: WorkerInput) -> dict:
@@ -138,7 +170,7 @@ def _worker_node(name: str, agent):
             return _failure(state, e)
         content = result["messages"][-1].content
         tables = [m.content for m in result["messages"][len(state["messages"]):]
-                  if isinstance(m, ToolMessage) and FINANCIAL_TABLE_MARK in str(m.content)]
+                  if isinstance(m, ToolMessage) and VERBATIM_MARK in str(m.content)]
         if tables:
             content += "\n\n" + "\n\n".join(tables)
         trace.log(state["run_id"], "worker_done", step=state["step"], agent=name, attempt=task["attempt"],
@@ -149,54 +181,88 @@ def _worker_node(name: str, agent):
 
 
 def _writer_node(state: WorkerInput) -> dict:
+    """보고서를 작성한다. 형식(SUMMARY·목차·REFERENCE 표기)을 검사해 어긋나면 한 번 고쳐 쓰게 한다."""
     try:
-        msgs = [SystemMessage(WRITER_PROMPT.format(today=date.today()))] + state["messages"]
-        report = _llm().invoke(msgs).content
-        # 원본 표에 붙은 내부 안내 문구는 리포트에 노출하지 않는다
-        report = "\n".join(line for line in report.splitlines() if FINANCIAL_TABLE_MARK not in line)
-        if not report.strip():
-            raise ValueError("빈 리포트")
+        llm = _llm()
+        msgs = [SystemMessage(_render(WRITER_PROMPT))] + state["messages"]
+        # 스코어카드가 있으면 투자 평가 요청이므로 목차 전체를 지켜야 한다
+        full = any(VERBATIM_MARK in str(m.content) and "스코어카드" in str(m.content) for m in state["messages"])
+        text = report.normalize_references(llm.invoke(msgs).content)
+        problems = report.violations(text, full)
+        if problems:
+            trace.log(state["run_id"], "report_format", step=state["step"], repaired=False, violations=problems)
+            fix = ("보고서가 형식 규칙을 어겼습니다. 내용과 수치는 그대로 두고 아래 사항만 고쳐 보고서 전체를 다시 출력하세요.\n- "
+                   + "\n- ".join(problems))
+            text = report.normalize_references(
+                llm.invoke(msgs + [AIMessage(content=text), HumanMessage(content=fix)]).content)
+            problems = report.violations(text, full)
+            trace.log(state["run_id"], "report_format", step=state["step"], repaired=True, violations=problems)
+        # 원본 표에 붙은 내부 안내 문구는 보고서에 노출하지 않는다
+        text = "\n".join(line for line in text.splitlines() if VERBATIM_MARK not in line)
+        if not text.strip():
+            raise ValueError("빈 보고서")
     except Exception as e:  # noqa: BLE001 - LLM·네트워크 오류 등
         return _failure(state, e)
     trace.log(state["run_id"], "worker_done", step=state["step"], agent="writer", attempt=state["task"]["attempt"],
-              instruction=state["task"]["instruction"], content=report)
-    return {"report": report, "messages": [AIMessage(content=report, name="writer")]}
+              instruction=state["task"]["instruction"], content=text)
+    return {"report": text, "messages": [AIMessage(content=text, name="writer")]}
 
 
-def _plan(decision: Route, state: FinanceState) -> tuple[list[Task], list[str], str]:
-    """LLM의 결정을 규칙에 맞게 다듬는다: (내보낼 작업, 부족한 관점, 사유)."""
-    missing = [] if decision.sufficient else decision.missing
+def _plan(decision: Route, state: EvaluationState, findings: list[Finding]) -> tuple[list[Task], list[str], str]:
+    """LLM의 결정을 규칙에 맞게 다듬는다: (내보낼 작업, 부족한 항목, 사유).
+
+    - 조사는 MAX_RESEARCH_ROUNDS 건까지, 결정은 MAX_STEPS 번까지. 마지막 결정은 writer다.
+    - 스코어카드가 필요한 요청은 writer로 가기 전에 evaluator를 반드시 한 번 거친다.
+    """
+    missing = [] if decision.sufficient else [MISSING_LABELS[m] for m in dict.fromkeys(decision.missing)]
     reason = decision.reason
     tasks = [Task(agent=a.agent, instruction=a.instruction, attempt=1) for a in decision.assignments]
-    research = [t for t in tasks if t["agent"] != "writer"]
+    research = [t for t in tasks if t["agent"] in RESEARCHERS]
+    evaluator = next((t for t in tasks if t["agent"] == "evaluator"), None)
     writer = next((t for t in tasks if t["agent"] == "writer"), None)
+
+    has_scorecard = any(f["agent"] == "evaluator" for f in findings)
+    need_scorecard = decision.needs_scorecard and not has_scorecard
+    remaining = MAX_STEPS - state["step"]  # 이번을 포함해 남은 결정 수
     budget = MAX_RESEARCH_ROUNDS - state["rounds"]
-    if state["step"] + 1 >= MAX_STEPS:
-        budget = 0
+    # 조사를 더 내보내도 되는가: 조사 건수가 남아 있고, 뒤에 evaluator와 writer가 설 자리가 남아 있을 때만
+    can_research = budget > 0 and remaining > 2
 
-    if budget <= 0:
-        # 조사 한도: 루프를 끊고 지금까지의 결과로 리포트를 쓰게 한다
-        if research or not writer:
-            reason += " → 조사 한도에 도달해 writer로 진행"
+    if remaining <= 1:
+        if not writer or research or evaluator:
+            reason += " → 결정 한도에 도달해 writer로 진행"
         tasks = [writer or Task(agent="writer", attempt=1,
-                                instruction="조사 한도에 도달했습니다. 지금까지의 결과만으로 리포트를 작성하세요.")]
-    elif research and (missing or not writer):
+                                instruction="조사 한도에 도달했습니다. 지금까지의 결과만으로 보고서를 작성하세요.")]
+    elif research and can_research and (missing or not (writer or evaluator)):
         tasks = research[:min(budget, MAX_PARALLEL)]
-    elif missing:
-        # 증거가 부족한데 writer만 고른 경우: 부족한 관점을 먼저 보강한다
+    elif evaluator and not writer:
+        tasks = [evaluator]
+    elif need_scorecard:
+        # 스코어카드 없이 보고서로 넘어가려는 경우(조사 한도 도달 포함): 지금까지의 근거로 먼저 평가한다
+        reason += " → 스코어카드가 없어 evaluator를 먼저 실행"
+        tasks = [evaluator or Task(agent="evaluator", attempt=1,
+                                   instruction="지금까지 수집된 근거로 평가 항목별 점수를 매기고 스코어카드를 산출하세요. "
+                                               "근거가 없는 항목은 평가 보류로 두세요.")]
+    elif missing and can_research and not has_scorecard:
+        # 증거가 부족한데 writer만 고른 경우: 부족한 항목을 먼저 보강한다
         reason += " → 근거가 부족해 writer를 보류하고 재조사"
-        tasks = [Task(agent="researcher", attempt=1,
-                      instruction=f"다음 관점의 근거를 추가로 수집하세요: {', '.join(missing)}")]
+        tasks = [Task(agent="company_researcher", attempt=1,
+                      instruction=f"다음 항목의 근거를 추가로 수집하세요: {', '.join(missing)}")]
     else:
-        tasks = [writer or Task(agent="writer", attempt=1, instruction="지금까지의 결과로 리포트를 작성하세요.")]
+        if research and not can_research:
+            reason += " → 조사 한도에 도달해 writer로 진행"
+        tasks = [writer or Task(agent="writer", attempt=1, instruction="지금까지의 결과로 보고서를 작성하세요.")]
 
-    if tasks[0]["agent"] == "writer" and missing:
-        tasks[0]["instruction"] += (f" 근거를 확보하지 못한 관점({', '.join(missing)})은 "
-                                    "추정하지 말고 확인되지 않았다고 밝히세요.")
+    if tasks[0]["agent"] == "writer" and not decision.needs_scorecard:
+        tasks[0]["instruction"] += " 투자 평가 요청이 아니므로 보고서 목차를 쓰지 말고 질문에 짧게 답한 뒤 REFERENCE 만 붙이세요."
+    unresolved = [m for m in missing if m != MISSING_LABELS["scorecard"]]
+    if tasks[0]["agent"] == "writer" and unresolved:
+        tasks[0]["instruction"] += (f" 근거가 부족한 항목({', '.join(unresolved)})은 "
+                                    "추정하지 말고 확인되지 않은 부분을 밝히세요.")
     return tasks, missing, reason
 
 
-def _dispatch(state: FinanceState, findings: list[Finding], tasks: list[Task], sufficient: bool,
+def _dispatch(state: EvaluationState, findings: list[Finding], tasks: list[Task], sufficient: bool,
               missing: list[str], reason: str, notes: list[Finding]) -> Command:
     """결정을 기록하고 작업을 내보낸다. 작업이 여러 개면 같은 superstep에서 동시에 실행된다."""
     step = state["step"] + 1
@@ -211,21 +277,21 @@ def _dispatch(state: FinanceState, findings: list[Finding], tasks: list[Task], s
     ]
     return Command(goto=sends, update={
         "step": step,
-        "rounds": state["rounds"] + sum(1 for t in tasks if t["agent"] != "writer"),
+        "rounds": state["rounds"] + sum(1 for t in tasks if t["agent"] in RESEARCHERS),
         "decision": decision,
         "findings": notes,
     })
 
 
-def _finish(state: FinanceState, status: str) -> Command:
+def _finish(state: EvaluationState, status: str) -> Command:
     trace.log(state["run_id"], "run_end", step=state["step"], status=status)
     return Command(goto=END, update={"status": status})
 
 
 def _supervisor_node(
-    state: FinanceState,
-) -> Command[Literal["researcher", "web_searcher", "analyst", "writer", "__end__"]]:
-    if state["report"]:  # 리포트가 나왔으면 종료
+    state: EvaluationState,
+) -> Command[Literal["company_researcher", "tech_researcher", "market_researcher", "evaluator", "writer", "__end__"]]:
+    if state["report"]:  # 보고서가 나왔으면 종료
         return _finish(state, "done")
 
     # 직전 결정에서 실패한 작업: 시도 횟수가 남았으면 그대로 다시 맡기고, 아니면 실패로 확정한다
@@ -245,25 +311,20 @@ def _supervisor_node(
                          "직전 작업이 오류로 실패해 다시 시도", notes)
 
     router = _llm().with_structured_output(Route)
-    decision: Route = router.invoke([SystemMessage(SUPERVISOR_PROMPT)] + _context(state["messages"], findings))
-    tasks, missing, reason = _plan(decision, state)
+    decision: Route = router.invoke([SystemMessage(_render(SUPERVISOR_PROMPT))] + _context(state["messages"], findings))
+    tasks, missing, reason = _plan(decision, state, findings)
     return _dispatch(state, findings, tasks, not missing, missing, reason, notes)
 
 
 def build_graph(checkpointer=None):
-    researcher = _make_tool_agent(RESEARCHER_PROMPT, RESEARCH_TOOLS)
-    web_searcher = _make_tool_agent(WEB_SEARCHER_PROMPT, WEB_TOOLS)
-    analyst = _make_tool_agent(ANALYST_PROMPT, ANALYST_TOOLS)
-
-    g = StateGraph(FinanceState)
+    g = StateGraph(EvaluationState)
     g.add_node("init", _init_node)
     g.add_node("supervisor", _supervisor_node)
-    g.add_node("researcher", _worker_node("researcher", researcher))
-    g.add_node("web_searcher", _worker_node("web_searcher", web_searcher))
-    g.add_node("analyst", _worker_node("analyst", analyst))
+    for name, (prompt, tools) in WORKERS.items():
+        g.add_node(name, _worker_node(name, _make_tool_agent(prompt, tools)))
     g.add_node("writer", _writer_node)
     g.add_edge(START, "init")
     g.add_edge("init", "supervisor")
-    for worker in ("researcher", "web_searcher", "analyst", "writer"):
+    for worker in (*WORKERS, "writer"):
         g.add_edge(worker, "supervisor")
     return g.compile(checkpointer=checkpointer or InMemorySaver())
