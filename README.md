@@ -1,9 +1,11 @@
 # Subject
+
 본 프로젝트는 국내 상장사 1곳을 **사업·기술 경쟁력, 성장성·시장 평가, 주주·지배구조·공시, 재무 건전성·산업 특성** 4개 관점에서 분석하는 보고서를
 **Supervisor 패턴** 기반 멀티 에이전트로 설계·개발한 프로젝트임.
 DART 공시·재무제표·사업보고서(RAG)와 Yahoo Finance 시세를 근거로 쓰며, 보고서는 특정 판단을 권하지 않는 **중립적 다관점 분석**을 목표로 함.
 
 ## Overview
+
 - **Objective** : 하나의 기업을 4개 관점에서 근거 기반으로 분석하고, 품질 평가를 통과한 보고서만 내보낸다
 - **Pattern** : Supervisor — 보고서 작성 전에 "근거가 충분한가"를 중앙에서 판단하고, 부족한 관점만 골라 재조사시키는 흐름이 필요했다.
   사전 분해(Orchestrator)보다 수집 결과에 따라 다음 행동이 바뀌는 구조가 이 문제에 맞다고 판단했다.
@@ -13,14 +15,15 @@ DART 공시·재무제표·사업보고서(RAG)와 Yahoo Finance 시세를 근�
 
 ## Analysis Perspectives (과제 4관점 매핑)
 
-| 과제 관점 | 보고서 절 | 작성 담당 | 충분성 판정에 필요한 근거 |
-|---|---|---|---|
-| 기술 성숙도 | 1. 사업·기술 경쟁력 | researcher | 사업보고서 RAG |
-| 시장성 | 2. 성장성·시장 평가 | analyst | 주가 요약 + 재무 비율 |
-| 이해관계자 | 3. 주주·지배구조·공시 | researcher | 최근 공시 + 기업개황 |
-| 도메인 적용 | 4. 재무 건전성·산업 특성 | analyst | 재무 비율 + 재무제표 (업종 특성 반영, 금융사 예외 처리) |
+| 과제 관점   | 보고서 절                | 작성 담당  | 충분성 판정에 필요한 근거                               |
+| ----------- | ------------------------ | ---------- | ------------------------------------------------------- |
+| 기술 성숙도 | 1. 사업·기술 경쟁력      | researcher | 사업보고서 RAG                                          |
+| 시장성      | 2. 성장성·시장 평가      | analyst    | 주가 요약 + 재무 비율                                   |
+| 이해관계자  | 3. 주주·지배구조·공시    | researcher | 최근 공시 + 기업개황                                    |
+| 도메인 적용 | 4. 재무 건전성·산업 특성 | analyst    | 재무 비율 + 재무제표 (업종 특성 반영, 금융사 예외 처리) |
 
 ## Features
+
 - **PDF/공시 자료 기반 정보 추출** : DART 사업보고서 원문(XML)에서 서술형 섹션만 잘라 RAG 인덱싱, 표는 행 단위 텍스트로 보존
 - **하이브리드 검색** : 벡터 유사도 후보 30개 + 한국어 bigram 키워드 점수로 재정렬
 - **숫자는 Python이 계산** : 재무 비율·TTM PER은 도구가 직접 계산, 추가 계산은 AST 기반 안전 계산기만 허용
@@ -31,6 +34,7 @@ DART 공시·재무제표·사업보고서(RAG)와 Yahoo Finance 시세를 근�
 - **인용 ↔ 출처 1:1 연결** : 본문 `[E#]` 인용을 코드가 읽어 REFERENCE 절을 자동 생성 (모델이 출처를 지어낼 수 없음)
 
 ## Tech Stack
+
 - Framework : LangGraph (Supervisor + ReAct 서브그래프), LangChain Core
 - LLM/Generator : OpenAI `gpt-5-mini` (`OPENAI_MODEL`로 변경)
 - LLM/Judge : OpenAI `gpt-5-mini` (`OPENAI_JUDGE_MODEL`로 생성 모델과 분리 가능)
@@ -42,6 +46,7 @@ DART 공시·재무제표·사업보고서(RAG)와 Yahoo Finance 시세를 근�
 - Backend / Frontend : FastAPI + SSE / Next.js (선택 사항)
 
 ## Agents
+
 - **Supervisor** : 대상 기업·범위 접수, 관점별 근거 충분성 판정, 허용 후보 안에서 다음 담당 선택, 재작업·수정 요청, 종료 결정. 하위 에이전트끼리는 엣지가 없고 모든 통신은 supervisor를 거친다
 - **Researcher** : 기업개황·재무제표·주가·공시·사업보고서 RAG 수집 → 담당 관점(사업·기술, 주주·공시) 정리
 - **Analyst** : 재무 비율 계산·해석 → 담당 관점(성장성·시장, 재무 건전성) 정리
@@ -50,17 +55,18 @@ DART 공시·재무제표·사업보고서(RAG)와 Yahoo Finance 시세를 근�
 
 ### Supervisor 필수 항목 구현 위치
 
-| 과제 필수 항목 | 구현 |
-|---|---|
-| 하위 에이전트는 Supervisor하고만 통신 | `graph.py` — worker → supervisor 엣지만 존재, worker 간 엣지 없음 |
-| State 기반 `add_conditional_edges` 분기, 순서 하드코딩 금지 | `supervisor.py`가 `next` 기록 → `graph.route_after_supervisor()`(순수 함수)가 분기 |
-| 근거 충분성 평가 후에만 보고서 작성 (스텝 고정 금지) | `supervisor.py` 4단계 — 4관점 모두 충분하거나 재작업 한도 소진 시에만 `writer`가 허용 후보가 됨 |
-| 근거 부족 시 해당 하위 에이전트 재작업 | `responsible_workers()` — 없는 근거의 수집 담당 / 내용이 부족하면 작성 담당에게 사유와 함께 재지시 (`is_rework` 로그) |
+| 과제 필수 항목                                              | 구현                                                                                                                  |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| 하위 에이전트는 Supervisor하고만 통신                       | `graph.py` — worker → supervisor 엣지만 존재, worker 간 엣지 없음                                                     |
+| State 기반 `add_conditional_edges` 분기, 순서 하드코딩 금지 | `supervisor.py`가 `next` 기록 → `graph.route_after_supervisor()`(순수 함수)가 분기                                    |
+| 근거 충분성 평가 후에만 보고서 작성 (스텝 고정 금지)        | `supervisor.py` 4단계 — 4관점 모두 충분하거나 재작업 한도 소진 시에만 `writer`가 허용 후보가 됨                       |
+| 근거 부족 시 해당 하위 에이전트 재작업                      | `responsible_workers()` — 없는 근거의 수집 담당 / 내용이 부족하면 작성 담당에게 사유와 함께 재지시 (`is_rework` 로그) |
 
 판단과 분기를 나눴다. LLM은 충분성 판정과 '허용된 후보 중' 다음 담당만 고르고, 허용 후보 계산·상한 검사는 코드가 한다.
 LLM이 후보 밖을 고르면 코드가 기본 경로로 교체하고 그 사실을 결정 로그(`llm_override`)에 남긴다.
 
 ## State Schema
+
 코드: [`finance_agent/state.py`](finance_agent/state.py)
 
 ```python
@@ -87,9 +93,11 @@ class FinanceState(MessagesState):
 - **종료 보장** : `config.py` 상수로 코드에서 강제 — supervisor 판단 16회, 관점별 작업 3회(재작업 2회), 품질 미달 수정 2회, ReAct 도구 호출 8회, LangGraph `recursion_limit` 80. 상한 도달 시 `FINISH_WARNING`으로 경고를 붙여 종료
 
 ## Architecture
+
 ![architecture](docs/images/architecture.png)
 
 ## Directory Structure
+
 ```
 ├── finance_agent/
 │   ├── graph.py           # Supervisor 그래프 연결 (add_conditional_edges)
@@ -111,6 +119,7 @@ class FinanceState(MessagesState):
 ```
 
 ## Usage
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
@@ -121,15 +130,16 @@ python main.py "셀트리온 재무 분석해줘"
 
 실행이 끝나면 다음이 생성된다.
 
-| 파일 | 내용 |
-|---|---|
-| `outputs/reports/report_{trace_id}.md` | 최종 보고서 (마크다운) |
-| `outputs/reports/report_{trace_id}.pdf` | 최종 보고서 (제출용 PDF, A4·쪽번호) |
-| `outputs/runs/{trace_id}/decisions.jsonl` | supervisor 라우팅·재작업·평가 결정과 사유 |
+| 파일                                       | 내용                                           |
+| ------------------------------------------ | ---------------------------------------------- |
+| `outputs/reports/report_{trace_id}.md`     | 최종 보고서 (마크다운)                         |
+| `outputs/reports/report_{trace_id}.pdf`    | 최종 보고서 (제출용 PDF, A4·쪽번호)            |
+| `outputs/runs/{trace_id}/decisions.jsonl`  | supervisor 라우팅·재작업·평가 결정과 사유      |
 | `outputs/runs/{trace_id}/run-summary.json` | 라우팅 순서, 재작업 횟수, 수정 횟수, 최종 상태 |
-| `outputs/runs/{trace_id}/evidence/E*.md` | 근거 원문 |
+| `outputs/runs/{trace_id}/evidence/E*.md`   | 근거 원문                                      |
 
 테스트 (API 키 불필요):
+
 ```bash
 pytest -q
 ```
@@ -137,7 +147,7 @@ pytest -q
 웹 UI (선택): `uvicorn backend.app:app --port 8000` 후 `cd frontend && npm install && npm run dev`
 
 ## Contributors
+
 - 심혁 : Supervisor 재설계(충분성 판정·재작업·종료 가드), State Schema, 품질 평가 노드, 관측성 계층, 테스트, README
-- (원본 작성자) : 재무 도구·OpenDART 클라이언트·사업보고서 RAG·웹 UI
 
 > 본 프로젝트의 보고서는 정보 제공 목적이며 투자 권유가 아닙니다.
