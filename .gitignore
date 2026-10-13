@@ -4,7 +4,6 @@ __pycache__/
 .DS_Store
 
 # 문서 풀(DART 캐시·Chroma 인덱스)과 실행 결과는 폴더만 추적한다
-data/*
-!data/.gitkeep
+
 outputs/*
-!outputs/.gitkeep
+

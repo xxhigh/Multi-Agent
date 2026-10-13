@@ -1,0 +1,50 @@
+{
+  "20250411_피지컬 AI.pdf": {
+    "title": "피지컬 AI: 휴머노이드로 가는 길",
+    "source": "미래에셋증권",
+    "date": "2025-04-11",
+    "url": "https://securities.miraeasset.com/bbs/download/2135470.pdf?attachmentId=2135470",
+    "language": "ko",
+    "aliases": [
+      "Mirae Asset",
+      "Mirae Asset Securities",
+      "Mirae Asset Securities Research",
+      "미래에셋"
+    ]
+  },
+  "CSET-Physical-AI.pdf": {
+    "title": "Physical AI: A Primer for Policymakers on AI-Robotics Convergence",
+    "source": "Center for Security and Emerging Technology",
+    "date": "2026-02",
+    "url": "https://cset.georgetown.edu/publication/physical-ai",
+    "language": "en",
+    "aliases": [
+      "CSET",
+      "Georgetown CSET"
+    ]
+  },
+  "leveraging-power-ai-and-robotics.pdf": {
+    "title": "Looking into the Future: Leveraging the Power of AI and Robotics",
+    "source": "PwC Nigeria",
+    "date": "2018-07",
+    "url": "https://www.pwc.com/ng/en/assets/pdf/leveraging-power-ai-and-robotics.pdf",
+    "language": "en",
+    "aliases": [
+      "PwC",
+      "PwC NG"
+    ]
+  },
+  "physical.pdf": {
+    "title": "피지컬 AI 생태계 및 새로운 성장 기회 전망",
+    "source": "삼일PwC",
+    "date": "2026-03",
+    "url": "https://www.pwc.com/kr/ko/event/event-presentation/event_260318_3-4.pdf",
+    "language": "ko",
+    "aliases": [
+      "Samil PwC",
+      "PwC Korea",
+      "삼일회계법인",
+      "삼일PwC경영연구원"
+    ]
+  }
+}
