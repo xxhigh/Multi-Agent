@@ -45,7 +45,7 @@ def build_reference(report: str, evidence: list[EvidenceRef]) -> str:
         sources = doc_sources(load_evidence(e.path)) if e.type in ("company_doc", "industry_doc") else []
         if sources:
             lines.append(f"- [{e.id}] {e.provider} (문서 풀 검색)")
-            lines += [f"  - {desc}" + (f" — {url}" if url else "") for desc, url in sources]
+            lines += [f"    - {desc}" + (f" — {url}" if url else "") for desc, url in sources]
             continue
         url = f" — {e.url}" if e.url else ""
         lines.append(f"- [{e.id}] {e.provider} · {e.title}{url}")

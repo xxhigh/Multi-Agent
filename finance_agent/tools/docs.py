@@ -8,6 +8,7 @@ PDF는 페이지 단위로 텍스트를 뽑고(PyMuPDF), .md는 YAML 머리말(t
 
 import hashlib
 import re
+import unicodedata
 from pathlib import Path
 
 from .. import config
@@ -71,7 +72,9 @@ def company_folder(company: str) -> Path | None:
     base = config.DOCS_DIR / "companies"
     if not base.exists():
         return None
-    norm = lambda s: re.sub(r"\s|\(주\)|주식회사", "", s).lower()  # noqa: E731
+    def norm(s: str) -> str:  # macOS 파일명(NFD)과 DART 회사명(NFC) 차이도 흡수
+        return re.sub(r"\s|\(주\)|주식회사", "", unicodedata.normalize("NFC", s)).lower()
+
     for d in base.iterdir():
         if d.is_dir() and norm(d.name) == norm(company):
             return d

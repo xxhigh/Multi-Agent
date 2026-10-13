@@ -1,29 +1,36 @@
 digraph G {
-  rankdir=TB; bgcolor="white"; fontname="Noto Sans CJK KR";
-  node [shape=box, style="rounded,filled", fontname="Noto Sans CJK KR", fontsize=12, color="#555555"];
-  edge [fontname="Noto Sans CJK KR", fontsize=10, color="#666666"];
+  rankdir=TB; bgcolor="white"; fontname="Noto Sans CJK KR"; nodesep=0.35; ranksep=0.55;
+  node [shape=box, style="rounded,filled", fontname="Noto Sans CJK KR", fontsize=11, color="#555555"];
+  edge [fontname="Noto Sans CJK KR", fontsize=9, color="#666666"];
 
-  start [label="START\n사용자 질문", shape=oval, fillcolor="#eeeeee"];
-  sup [label="Supervisor\n① 접수(대상 기업·범위)\n② 관점별 충분성 = 규칙 검사 + LLM 판정\n③ 허용 후보 안에서 다음 담당 선택\n④ 상한 검사 (step·재작업·수정)", fillcolor="#e2e8f0", width=3.6];
-  route [label="route_after_supervisor()\n순수 함수: State.next만 읽어 분기\n(add_conditional_edges)", shape=diamond, fillcolor="#fef3c7", fontsize=10];
-  res [label="Researcher\nReAct 서브그래프\nDART·공시·주가·사업보고서 RAG", fillcolor="#e0f2fe"];
-  ana [label="Analyst\nReAct 서브그래프\n재무 비율 계산·해석", fillcolor="#ede9fe"];
-  wri [label="Writer\nSUMMARY·4관점·원본 표·한계\nREFERENCE는 코드가 생성", fillcolor="#dcfce7"];
-  eva [label="Evaluator (품질 평가)\n규칙 검사 → 통과 시 LLM Judge\nGroundedness·중립성·편향 통제·관점 커버리지", fillcolor="#fde68a"];
-  endn [label="END\nFINISH / FINISH_WARNING", shape=oval, fillcolor="#eeeeee"];
-  obs [label="관측성 계층 (State 밖)\noutputs/runs/{trace_id}/\ndecisions.jsonl · evidence/E*.md · run-summary.json\n+ LangSmith metadata.trace_id", shape=note, fillcolor="#f8fafc", fontsize=10];
+  start [label="START\n\"트위니 투자 가능성 평가해줘\"", shape=oval, fillcolor="#eeeeee"];
+  sup [label="Supervisor\n① 접수 (대상 기업·범위)\n② 관점별 근거 충분성 = 규칙 검사 + LLM 판정\n③ 허용 후보 안에서 다음 담당 선택 (밖이면 코드가 교체)\n④ 상한 검사 (step 16 · 관점별 3회 · 수정 2회)", fillcolor="#e2e8f0", width=4.2];
+  route [label="route_after_supervisor()\n순수 함수: State.next만 읽어 분기\n(add_conditional_edges)", shape=diamond, fillcolor="#fef3c7", fontsize=9];
+  res [label="Researcher\nCOMPANY & TEAM · TECHNOLOGY\nDART 기업개황·공시\n기업 자료 RAG", fillcolor="#e0f2fe"];
+  mkt [label="Market Researcher\nMARKET\n산업 리포트 RAG", fillcolor="#ccfbf1"];
+  inv [label="Investment Analyst\nINVESTMENT ASSESSMENT & RISKS\nDART 감사보고서 재무표(규칙 추출)\n주석 RAG · 스코어카드", fillcolor="#ede9fe"];
+  wri [label="Writer\nSUMMARY → 4개 절\n스코어카드·재무표·REFERENCE는 코드 삽입", fillcolor="#dcfce7"];
+  eva [label="Evaluator (품질 평가)\n규칙 검사(목차·인용·출처 다양성·금지어·PDF≤10장)\n→ 통과 시 LLM Judge\nGroundedness · 중립성 · 편향 통제 · 커버리지", fillcolor="#fde68a"];
+  endn [label="END\nFINISH / FINISH_WARNING\n→ report_{trace_id}.md + .pdf", shape=oval, fillcolor="#eeeeee"];
+  data [label="데이터\nOpenDART (비상장 감사보고서 포함)\ndata/docs 문서 풀 (Chroma + bigram 하이브리드)", shape=cylinder, fillcolor="#f1f5f9", fontsize=9];
+  obs [label="관측성 계층 (State 밖)\noutputs/runs/{trace_id}/\ndecisions.jsonl · evidence/E*.md · run-summary.json\n+ LangSmith metadata.trace_id", shape=note, fillcolor="#f8fafc", fontsize=9];
 
   start -> sup;
   sup -> route;
-  route -> res [label="근거 부족·재작업"];
-  route -> ana [label="지표 부족·재작업"];
-  route -> wri [label="4관점 충분\n또는 품질 미달(문장)"];
+  route -> res [label="회사·기술 근거 부족\n/ 재작업"];
+  route -> mkt [label="산업 근거 부족\n/ 재작업"];
+  route -> inv [label="재무·투자조건\n근거 부족 / 재작업"];
+  route -> wri [label="4개 관점 충분\n또는 품질 미달(문장)"];
   route -> eva [label="초안 완료"];
   route -> endn [label="통과 / 상한 도달"];
   res -> sup [label="항상 복귀"];
-  ana -> sup [label="항상 복귀"];
+  mkt -> sup [label="항상 복귀"];
+  inv -> sup [label="항상 복귀"];
   wri -> sup;
   eva -> sup [label="평가 결과\n(근거 부족이면 수집 담당으로)"];
+  res -> data [style=dotted, arrowhead=none, color="#94a3b8"];
+  mkt -> data [style=dotted, arrowhead=none, color="#94a3b8"];
+  inv -> data [style=dotted, arrowhead=none, color="#94a3b8"];
   sup -> obs [style=dashed, arrowhead=none, color="#94a3b8"];
-  {rank=same; res; ana; wri; eva;}
+  {rank=same; res; mkt; inv; wri; eva;}
 }
