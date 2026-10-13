@@ -1,9 +1,10 @@
 import type { Agent, AgentEvent } from "./api";
 
 export type Step =
-  | { kind: "route"; next: Agent | "FINISH"; instruction: string }
+  | { kind: "route"; next: Agent | "FINISH"; instruction: string; reason: string; override: string | null }
   | { kind: "tool"; agent: Agent; id: string; name: string; args: Record<string, unknown>; preview?: string }
-  | { kind: "done"; agent: Agent; chars: number; summary: string };
+  | { kind: "done"; agent: Agent; chars: number; summary: string; attempt?: number; failed?: boolean }
+  | { kind: "eval"; agent: "evaluator"; passed: boolean; issues: string[]; scores: Record<string, number> };
 
 export type Run = {
   id: string;
@@ -37,7 +38,10 @@ export function applyEvent(run: Run, e: AgentEvent): Run {
       return {
         ...run,
         active: e.next === "FINISH" ? null : e.next,
-        steps: [...run.steps, { kind: "route", next: e.next, instruction: e.instruction }],
+        steps: [
+          ...run.steps,
+          { kind: "route", next: e.next, instruction: e.instruction, reason: e.reason, override: e.override },
+        ],
       };
     case "tool_call":
       return { ...run, active: e.agent, steps: [...run.steps, { kind: "tool", ...e }] };
@@ -49,9 +53,22 @@ export function applyEvent(run: Run, e: AgentEvent): Run {
     case "worker_done":
       return {
         ...run,
-        active: "supervisor",
+        active: e.agent === "writer" ? "evaluator" : "supervisor",
         completed: run.completed.includes(e.agent) ? run.completed : [...run.completed, e.agent],
-        steps: [...run.steps, { kind: "done", agent: e.agent, chars: e.chars, summary: e.summary }],
+        steps: [
+          ...run.steps,
+          { kind: "done", agent: e.agent, chars: e.chars, summary: e.summary, attempt: e.attempt, failed: e.failed },
+        ],
+      };
+    case "evaluation":
+      return {
+        ...run,
+        active: e.passed ? null : "supervisor",
+        completed: run.completed.includes("evaluator") ? run.completed : [...run.completed, "evaluator"],
+        steps: [
+          ...run.steps,
+          { kind: "eval", agent: "evaluator", passed: e.passed, issues: e.issues, scores: e.scores },
+        ],
       };
     case "report":
       return { ...run, report: { content: e.content, name: e.name } };

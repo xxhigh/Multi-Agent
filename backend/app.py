@@ -14,7 +14,6 @@ import os
 import re
 import uuid
 from datetime import datetime
-from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -26,8 +25,9 @@ from fastapi.responses import StreamingResponse  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 from finance_agent import build_graph  # noqa: E402
+from finance_agent.observability import OUTPUT_DIR, log_decision, run_config  # noqa: E402
 
-REPORT_DIR = Path(__file__).resolve().parent.parent / "reports"
+REPORT_DIR = OUTPUT_DIR / "reports"
 REPORT_NAME = re.compile(r"^report_\d{8}_\d{6}\.md$")
 TOOL_RESULT_PREVIEW = 300
 
@@ -54,19 +54,22 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _save_report(report: str) -> str:
-    REPORT_DIR.mkdir(exist_ok=True)
+def _save_report(report: str, trace_id: str) -> str:
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
     path = REPORT_DIR / f"report_{datetime.now():%Y%m%d_%H%M%S}.md"
     path.write_text(report, encoding="utf-8")
+    log_decision(trace_id, "output", "saved", path=path.name)
     return path.name
 
 
 def _events(question: str, thread_id: str):
     """graph.stream 업데이트를 프론트가 그리기 쉬운 SSE 이벤트로 변환."""
-    config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
-    yield _sse("start", {"thread_id": thread_id})
+    trace_id = uuid.uuid4().hex
+    config = run_config(thread_id, trace_id, question)
+    yield _sse("start", {"thread_id": thread_id, "trace_id": trace_id})
     try:
-        stream = graph.stream({"messages": [("user", question)]}, config, stream_mode="updates", subgraphs=True)
+        stream = graph.stream({"messages": [("user", question)], "trace_id": trace_id}, config,
+                              stream_mode="updates", subgraphs=True)
         for namespace, update in stream:
             for node, data in update.items():
                 if not data:
@@ -83,19 +86,32 @@ def _events(question: str, thread_id: str):
                             yield _sse("tool_result", {"agent": agent, "id": m.tool_call_id,
                                                        "preview": str(m.content)[:TOOL_RESULT_PREVIEW]})
                 elif node == "supervisor":
-                    nxt = data.get("next")
-                    instruction = ""
-                    if data.get("messages"):
-                        instruction = data["messages"][-1].content.split("] ", 1)[-1]
-                    yield _sse("route", {"next": nxt, "instruction": instruction})
-                elif data.get("messages"):
-                    content = data["messages"][-1].content
-                    yield _sse("worker_done", {"agent": node, "chars": len(content),
-                                               "summary": content if node != "writer" else ""})
-                    if node == "writer":
-                        yield _sse("report", {"content": content, "name": _save_report(content)})
+                    d, s = data["decision"], data["sufficiency"]
+                    yield _sse("route", {"next": d["next"], "instruction": d["instruction"], "reason": d["reason"],
+                                         "override": d["override"], "missing": s["missing"],
+                                         "step": data["step_count"]})
+                elif node in ("researcher", "analyst"):
+                    if data.get("node_status", {}).get(node) == "failed":
+                        yield _sse("worker_done", {"agent": node, "chars": 0, "summary": data.get("last_error", ""),
+                                                   "failed": True})
+                    else:
+                        f = data["findings"][node]
+                        yield _sse("worker_done", {"agent": node, "chars": len(f["content"]), "summary": f["content"],
+                                                   "attempt": f["attempt"]})
+                elif node == "writer":
+                    yield _sse("worker_done", {"agent": "writer", "chars": len(data["report"]), "summary": ""})
+                elif node == "evaluator":
+                    ev = data["eval_result"]
+                    judge = ev.get("judge") or {}
+                    yield _sse("evaluation", {"passed": ev["passed"], "issues": ev["rule_issues"],
+                                              "rule_checks": ev["rule_checks"],
+                                              "scores": {k: v["score"] for k, v in judge.items()
+                                                         if isinstance(v, dict) and "score" in v}})
+        report = graph.get_state(config).values.get("report")
+        if report:
+            yield _sse("report", {"content": report, "name": _save_report(report, trace_id)})
     except Exception as e:  # noqa: BLE001 - 스트림 도중 오류를 클라이언트에 전달
-        log.exception("analyze 실패 (thread_id=%s)", thread_id)
+        log.exception("analyze 실패 (thread_id=%s, trace_id=%s)", thread_id, trace_id)
         yield _sse("error", {"message": f"{type(e).__name__}: {e}"})
     yield _sse("done", {})
 

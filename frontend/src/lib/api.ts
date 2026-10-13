@@ -1,13 +1,28 @@
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-export type Agent = "supervisor" | "researcher" | "analyst" | "writer";
+export type Agent = "supervisor" | "researcher" | "analyst" | "writer" | "evaluator";
 
 export type AgentEvent =
-  | { type: "start"; thread_id: string }
-  | { type: "route"; next: Agent | "FINISH"; instruction: string }
+  | { type: "start"; thread_id: string; trace_id: string }
+  | {
+      type: "route";
+      next: Agent | "FINISH";
+      instruction: string;
+      reason: string;
+      override: string | null;
+      missing: string[];
+      step: number;
+    }
   | { type: "tool_call"; agent: Agent; id: string; name: string; args: Record<string, unknown> }
   | { type: "tool_result"; agent: Agent; id: string; preview: string }
-  | { type: "worker_done"; agent: Agent; chars: number; summary: string }
+  | { type: "worker_done"; agent: Agent; chars: number; summary: string; attempt?: number; failed?: boolean }
+  | {
+      type: "evaluation";
+      passed: boolean;
+      issues: string[];
+      rule_checks: Record<string, boolean>;
+      scores: Record<string, number>;
+    }
   | { type: "report"; content: string; name: string }
   | { type: "error"; message: string }
   | { type: "done" };

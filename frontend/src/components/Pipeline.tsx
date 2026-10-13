@@ -1,7 +1,7 @@
 import type { Agent } from "@/lib/api";
 import { AGENTS } from "@/lib/agents";
 
-const ORDER: Agent[] = ["supervisor", "researcher", "analyst", "writer"];
+const ORDER: Agent[] = ["supervisor", "researcher", "analyst", "writer", "evaluator"];
 
 export function Pipeline({ active, completed }: { active: Agent | null; completed: Agent[] }) {
   return (

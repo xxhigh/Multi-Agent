@@ -24,6 +24,8 @@ function StepRow({ step }: { step: Step }) {
         <span className="text-muted"> → </span>
         <span className={`font-medium ${target.text}`}>{target.label}</span>
         {step.instruction && <p className="mt-0.5 text-muted">{step.instruction}</p>}
+        {step.reason && <p className="mt-0.5 text-xs text-muted">사유: {step.reason}</p>}
+        {step.override && <p className="mt-0.5 text-xs text-amber-600 dark:text-amber-400">규칙 가드: {step.override}</p>}
       </div>
     );
   }
@@ -50,12 +52,36 @@ function StepRow({ step }: { step: Step }) {
     );
   }
 
+  if (step.kind === "eval") {
+    const scores = Object.entries(step.scores)
+      .map(([k, v]) => `${k} ${v}/5`)
+      .join(" · ");
+    return (
+      <details className="group text-sm" open={!step.passed}>
+        <summary className="cursor-pointer list-none">
+          <span className="mr-1.5 inline-block text-muted transition group-open:rotate-90">›</span>
+          <span className={`font-medium ${AGENTS.evaluator.text}`}>Evaluator</span>{" "}
+          {step.passed ? "품질 평가 통과" : "품질 평가 미달 → 재작업"}
+          {scores && <span className="text-muted"> · {scores}</span>}
+        </summary>
+        {step.issues.length > 0 && (
+          <ul className="mt-1.5 ml-4 list-disc space-y-0.5 pl-4 text-xs text-muted">
+            {step.issues.map((issue, i) => (
+              <li key={i}>{issue}</li>
+            ))}
+          </ul>
+        )}
+      </details>
+    );
+  }
+
   const meta = AGENTS[step.agent];
   return (
     <details className="group text-sm">
       <summary className="cursor-pointer list-none">
         <span className="mr-1.5 inline-block text-muted transition group-open:rotate-90">›</span>
-        <span className={`font-medium ${meta.text}`}>{meta.label}</span> 작업 완료
+        <span className={`font-medium ${meta.text}`}>{meta.label}</span> {step.failed ? "작업 실패" : "작업 완료"}
+        {step.attempt && step.attempt > 1 && <span className="text-muted"> · 재작업 {step.attempt - 1}회차</span>}
         <span className="text-muted"> · {step.chars.toLocaleString()}자</span>
       </summary>
       {step.summary && (
