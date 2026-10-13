@@ -3,28 +3,6 @@
 국내 상장사 재무 분석 멀티 에이전트입니다.
 회사 이름을 입력하면 **Supervisor · Researcher · Analyst · Writer** 에이전트가 협업해 DART 공시와 사업보고서를 바탕으로 재무 분석 리포트를 작성합니다.
 
-## 예시: 셀트리온
-
-> 질문: `셀트리온 재무 분석해줘`
-
-![셀트리온 재무 분석 리포트](docs/images/celltrion_report.png)
-
-<details>
-<summary>리포트 전체 화면 보기</summary>
-
-![셀트리온 재무 분석 리포트 전체](docs/images/celltrion_report_full.png)
-
-</details>
-
-<details>
-<summary>시작 화면</summary>
-
-![시작 화면](docs/images/home.png)
-
-</details>
-
----
-
 ## 에이전트 설계
 
 ### 전체 구조
@@ -75,9 +53,9 @@ LangGraph의 **Supervisor 패턴**으로 구성했습니다. Supervisor가 대�
    - 약칭(현대차, 삼전, 엔솔 등)을 정식 회사명으로 바꾸고, 회사명이 애매하면 후보 목록을 돌려줍니다.
    - 연결재무제표가 없으면 별도재무제표로 대체하고, 금융사는 ROE·PBR·배당성향 중심으로 해석합니다.
 
-6. **실시간 진행 상황 스트리밍**
-   FastAPI가 `graph.stream(subgraphs=True)` 결과를 SSE 이벤트(`route`, `tool_call`, `tool_result`, `worker_done`, `report`)로 바꿔 보내고, 프론트엔드가 에이전트 파이프라인과 도구 호출 타임라인을 실시간으로 보여줍니다.
-   `InMemorySaver` 체크포인터를 써서 같은 `thread_id`로 후속 질문을 이어갈 수 있습니다.
+6. **실시간 진행 상황 표시**
+   `graph.stream(subgraphs=True)` 업데이트를 받아 Supervisor의 라우팅, 에이전트별 도구 호출, 작업 완료를 터미널에 바로 출력합니다.
+   `InMemorySaver` 체크포인터를 써서 대화형 모드에서는 같은 `thread_id`로 후속 질문을 이어갈 수 있습니다.
 
 ---
 
@@ -89,8 +67,7 @@ LangGraph의 **Supervisor 패턴**으로 구성했습니다. Supervisor가 대�
 | **LLM** | OpenAI `gpt-5-mini` (`OPENAI_MODEL`로 변경 가능), `text-embedding-3-small` |
 | **RAG** | ChromaDB (Persistent), 벡터 + bigram 키워드 하이브리드 검색 |
 | **데이터** | OpenDART API (재무제표·기업개황·공시·사업보고서 원문), yfinance (주가·시가총액) |
-| **Backend** | Python, FastAPI, Uvicorn, SSE 스트리밍 |
-| **Frontend** | Next.js 16, React 19, TypeScript, Tailwind CSS 4, react-markdown (+ remark-gfm) |
+| **실행** | Python CLI |
 
 ---
 
@@ -110,9 +87,7 @@ LangGraph의 **Supervisor 패턴**으로 구성했습니다. Supervisor가 대�
 │   ├── analyst.md
 │   └── writer.md
 ├── outputs/               # 실행 결과 저장 (report_YYYYMMDD_HHMMSS.md)
-├── app.py                 # 실행 스크립트 (CLI + FastAPI SSE API)
-├── frontend/              # Next.js 웹 UI
-├── docs/images/           # README 스크린샷
+├── app.py                 # 실행 스크립트 (CLI)
 ├── requirements.txt
 └── README.md
 ```
@@ -129,38 +104,21 @@ OPENDART_API_KEY=...      # https://opendart.fss.or.kr 에서 발급
 OPENAI_MODEL=gpt-5-mini   # 선택
 ```
 
-### 2. 백엔드
+### 2. 설치
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app:app --reload --port 8000
 ```
 
-### 3. 프론트엔드
-
-```bash
-cd frontend
-cp .env.example .env.local   # NEXT_PUBLIC_API_URL=http://localhost:8000
-npm install
-npm run dev                  # http://localhost:3000
-```
-
-### CLI로 실행
+### 3. 실행
 
 ```bash
 python app.py                         # 대화형 모드
 python app.py "셀트리온 재무 분석해줘"   # 단일 질문
 ```
 
-## API
-
-| Method | Path | 설명 |
-|---|---|---|
-| `POST` | `/api/analyze` | 질문을 받아 에이전트 진행 상황을 SSE로 스트리밍 |
-| `GET` | `/api/reports` | 저장된 리포트 목록 (`outputs/`) |
-| `GET` | `/api/reports/{name}` | 리포트 본문 |
-| `GET` | `/api/health` | 헬스 체크 |
+진행 상황이 터미널에 출력되고, 완성된 리포트는 `outputs/report_YYYYMMDD_HHMMSS.md`로 저장됩니다.
 
 ---
 
